@@ -116,6 +116,20 @@
       border-bottom: 1px solid #2f2f2f;
       background: #151515;
     }
+    #editor-actions button {
+      background: #2d2d2d;
+      border-color: #4f4f4f;
+      color: #ddd;
+    }
+    #editor-actions button.primary {
+      background: #2f65ff;
+      border-color: #2f65ff;
+      color: #fff;
+    }
+    #editor-actions button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     #editor {
       display: none;
       flex: 1;
@@ -173,6 +187,11 @@
       border-color: #575757;
       font-size: 11px;
     }
+    .tab .title {
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .preview-tab {
       display: flex;
       align-items: center;
@@ -201,15 +220,47 @@
       color: #fff;
     }
     #terminal { flex: 1; min-height: 0; padding: 6px; }
+    #logout-modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 50;
+    }
+    #logout-modal.open { display: flex; }
+    .modal-card {
+      width: 100%;
+      max-width: 420px;
+      background: #161616;
+      border: 1px solid #3b3b3b;
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .modal-card h3 {
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+    .modal-card p {
+      color: #a9a9a9;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
   </style>
 </head>
 <body>
   <div id="login">
     <form class="card" id="login-form">
       <h1>CodeWebway</h1>
-      <p>Enter password and PIN to open workspace</p>
+      <p>Enter Token and PIN to open workspace</p>
       <div class="stack">
-        <input id="password" type="password" autocomplete="current-password" placeholder="Password" required />
+        <input id="password" type="password" autocomplete="current-password" placeholder="Token" required />
         <div class="row">
           <input id="pin" type="password" autocomplete="one-time-code" placeholder="PIN" />
           <button id="submit" type="submit">Connect</button>
@@ -255,6 +306,18 @@
     </div>
   </div>
 
+  <div id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-title">
+    <div class="modal-card">
+      <h3 id="logout-title">Logout options</h3>
+      <p>Choose whether to logout only, or logout and lock access until server restart.</p>
+      <div class="modal-actions">
+        <button id="logout-cancel" class="ghost" type="button">Cancel</button>
+        <button id="logout-only" class="ghost" type="button">Logout only</button>
+        <button id="logout-lock" type="button">Logout + Lock</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
   <script>
@@ -279,6 +342,10 @@
     const cancelEditBtn = document.getElementById('cancel-edit');
     const openShellHereBtn = document.getElementById('open-shell-here');
     const refreshTreeBtn = document.getElementById('refresh-tree');
+    const logoutModal = document.getElementById('logout-modal');
+    const logoutOnlyBtn = document.getElementById('logout-only');
+    const logoutLockBtn = document.getElementById('logout-lock');
+    const logoutCancelBtn = document.getElementById('logout-cancel');
 
     let ws;
     let retries = 0;
@@ -311,6 +378,44 @@
     function setStatus(text, color) {
       statusEl.textContent = text;
       statusEl.style.color = color || '#c8c8c8';
+    }
+
+    function updateEditorActionState() {
+      const current = activeFilePath
+        ? openFiles.find((item) => item.path === activeFilePath)
+        : null;
+      const canEdit = Boolean(
+        current &&
+        !current.truncated &&
+        (current.size_bytes || current.content.length) <= FILE_EDIT_LIMIT_BYTES
+      );
+      const editing = Boolean(editingPath);
+
+      editFileBtn.disabled = editing || !canEdit;
+      saveFileBtn.disabled = !editing;
+      cancelEditBtn.disabled = !editing;
+      saveFileBtn.classList.toggle('primary', editing);
+    }
+
+    function chooseLogoutMode() {
+      return new Promise((resolve) => {
+        const close = (value) => {
+          logoutModal.classList.remove('open');
+          logoutOnlyBtn.onclick = null;
+          logoutLockBtn.onclick = null;
+          logoutCancelBtn.onclick = null;
+          logoutModal.onclick = null;
+          resolve(value);
+        };
+
+        logoutOnlyBtn.onclick = () => close(false);
+        logoutLockBtn.onclick = () => close(true);
+        logoutCancelBtn.onclick = () => close(null);
+        logoutModal.onclick = (e) => {
+          if (e.target === logoutModal) close(null);
+        };
+        logoutModal.classList.add('open');
+      });
     }
 
     async function api(path, options = {}) {
@@ -458,6 +563,7 @@
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
+      updateEditorActionState();
     }
 
     function initTerminal() {
@@ -644,13 +750,78 @@
       renderTerminalTabs();
     }
 
+    function moveTerminalTab(index, delta) {
+      const next = index + delta;
+      if (index < 0 || next < 0 || index >= terminals.length || next >= terminals.length) return;
+      const temp = terminals[index];
+      terminals[index] = terminals[next];
+      terminals[next] = temp;
+      renderTerminalTabs();
+    }
+
+    async function renameTerminal(id, title) {
+      const res = await api(`/api/terminals/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        alert(msg || 'Cannot rename terminal');
+        return null;
+      }
+      return res.json();
+    }
+
+    async function promptRenameTerminal(item) {
+      const next = window.prompt('Rename tab', item.title);
+      if (next === null) return;
+      const title = next.trim();
+      if (!title || title === item.title) return;
+      const updated = await renameTerminal(item.id, title);
+      if (!updated) return;
+      const idx = terminals.findIndex((t) => t.id === item.id);
+      if (idx >= 0) terminals[idx] = updated;
+      renderTerminalTabs();
+    }
+
     function renderTerminalTabs() {
       termTabs.querySelectorAll('.tab').forEach((node) => node.remove());
-      terminals.forEach((item) => {
+      terminals.forEach((item, index) => {
         const tab = document.createElement('div');
         tab.className = `tab ${item.id === activeTerminalId ? 'active' : ''}`;
-        tab.innerHTML = `<span>${item.title}</span>`;
+        tab.innerHTML = `<span class="title">${item.title}</span>`;
         tab.onclick = () => connectTerminal(item.id);
+        tab.ondblclick = (e) => {
+          e.stopPropagation();
+          promptRenameTerminal(item);
+        };
+
+        const leftBtn = document.createElement('button');
+        leftBtn.textContent = '←';
+        leftBtn.disabled = index === 0;
+        leftBtn.onclick = (e) => {
+          e.stopPropagation();
+          moveTerminalTab(index, -1);
+        };
+        tab.appendChild(leftBtn);
+
+        const rightBtn = document.createElement('button');
+        rightBtn.textContent = '→';
+        rightBtn.disabled = index === terminals.length - 1;
+        rightBtn.onclick = (e) => {
+          e.stopPropagation();
+          moveTerminalTab(index, 1);
+        };
+        tab.appendChild(rightBtn);
+
+        const renameBtn = document.createElement('button');
+        renameBtn.textContent = 'rename';
+        renameBtn.onclick = (e) => {
+          e.stopPropagation();
+          promptRenameTerminal(item);
+        };
+        tab.appendChild(renameBtn);
 
         const closeBtn = document.createElement('button');
         closeBtn.textContent = 'x';
@@ -682,14 +853,24 @@
       return path.slice(0, idx);
     }
 
+    function movePreviewTab(index, delta) {
+      const next = index + delta;
+      if (index < 0 || next < 0 || index >= openFiles.length || next >= openFiles.length) return;
+      const temp = openFiles[index];
+      openFiles[index] = openFiles[next];
+      openFiles[next] = temp;
+      renderPreviewTabs();
+    }
+
     function renderPreviewTabs() {
       previewTabsEl.innerHTML = '';
       if (openFiles.length === 0) {
         activeFilePath = null;
         previewEl.textContent = 'Select a file to preview';
+        updateEditorActionState();
         return;
       }
-      openFiles.forEach((file) => {
+      openFiles.forEach((file, index) => {
         const tab = document.createElement('div');
         tab.className = `preview-tab ${file.path === activeFilePath ? 'active' : ''}`;
 
@@ -705,8 +886,29 @@
           previewEl.style.display = 'block';
           previewEl.textContent = file.content + (file.truncated ? '\n\n[truncated]' : '');
           renderPreviewTabs();
+          updateEditorActionState();
         };
         tab.appendChild(label);
+
+        const leftBtn = document.createElement('button');
+        leftBtn.className = 'close';
+        leftBtn.textContent = '←';
+        leftBtn.disabled = index === 0;
+        leftBtn.onclick = (e) => {
+          e.stopPropagation();
+          movePreviewTab(index, -1);
+        };
+        tab.appendChild(leftBtn);
+
+        const rightBtn = document.createElement('button');
+        rightBtn.className = 'close';
+        rightBtn.textContent = '→';
+        rightBtn.disabled = index === openFiles.length - 1;
+        rightBtn.onclick = (e) => {
+          e.stopPropagation();
+          movePreviewTab(index, 1);
+        };
+        tab.appendChild(rightBtn);
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'close';
@@ -728,10 +930,12 @@
             }
           }
           renderPreviewTabs();
+          updateEditorActionState();
         };
         tab.appendChild(closeBtn);
         previewTabsEl.appendChild(tab);
       });
+      updateEditorActionState();
     }
 
     async function openFile(path) {
@@ -767,6 +971,7 @@
         previewEl.textContent = cached.content + (cached.truncated ? '\n\n[truncated]' : '');
         renderPreviewTabs();
         selectedDir = parentPath(cached.path);
+        updateEditorActionState();
         return;
       }
 
@@ -791,6 +996,7 @@
       previewEl.textContent = file.content + (file.truncated ? '\n\n[truncated]' : '');
       renderPreviewTabs();
       selectedDir = parentPath(file.path);
+      updateEditorActionState();
     }
 
     async function saveActiveFile() {
@@ -830,6 +1036,7 @@
       previewEl.style.display = 'block';
       await renderTree();
       await refreshUsage();
+      updateEditorActionState();
     }
 
     async function renderTree() {
@@ -914,7 +1121,7 @@
           } else if (res.status === 429) {
             errorEl.textContent = 'Too many attempts. Try again later.';
           } else {
-            errorEl.textContent = 'Invalid password or PIN';
+            errorEl.textContent = 'Invalid token or PIN';
           }
           submitBtn.disabled = false;
           return;
@@ -953,6 +1160,7 @@
       previewEl.style.display = 'none';
       editorEl.style.display = 'block';
       editorEl.focus();
+      updateEditorActionState();
     });
 
     saveFileBtn.addEventListener('click', () => {
@@ -965,6 +1173,7 @@
       editingOriginal = '';
       editorEl.style.display = 'none';
       previewEl.style.display = 'block';
+      updateEditorActionState();
     });
 
     editorEl.addEventListener('keydown', (e) => {
@@ -1040,12 +1249,8 @@
     });
 
     logoutBtn.addEventListener('click', async () => {
-      const confirmLogout = window.confirm('Log out now?');
-      if (!confirmLogout) return;
-
-      const lockSystem = window.confirm(
-        'Close system now?\nOK = lock access until server restart\nCancel = logout only (you can login again elsewhere)'
-      );
+      const lockSystem = await chooseLogoutMode();
+      if (lockSystem === null) return;
       loggingOut = true;
       logoutNotice = lockSystem
         ? 'Logged out and locked access. Restart CodeWebway to login again.'
@@ -1069,6 +1274,8 @@
         usageTimer = null;
       }
     });
+
+    updateEditorActionState();
   </script>
 </body>
 </html>

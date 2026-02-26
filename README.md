@@ -8,44 +8,37 @@
           [ A seamless, single-binary web terminal and file editor. ]
 ```
 
-A lightweight web terminal written in Rust. Run it on any machine and access your shell from any browser — no remote desktop, no VNC, no heavy software required.
+CodeWebway is a lightweight Rust tool for secure browser-based terminal access and quick file editing. It is designed for personal workflows, headless machines, and remote AI-agent sessions.
 
-**Powered by Rust**
+## How It Works
 
-## How it works
-
-```
-Browser ←── WebSocket ──→ CodeWebway ←──→ $SHELL (PTY)
-                                ↕
-                       broadcast channel
-                    (shared across all tabs)
+```text
+Browser <-> WebSocket <-> CodeWebway <-> Host shell (PTY)
 ```
 
-## Why use this?
+- One local process hosts both backend and web UI.
+- Terminal tabs are server-side PTY sessions.
+- Browser clients reconnect and resume session state.
 
-- **Full Remote CLI Control** — Remotely control the host terminal from any device in a browser. Run scripts, build projects, and inspect logs without installing extra clients.
-- **Headless Server Companion** — Built for machines without a desktop environment. Start the binary and get an interactive PTY plus in-browser file editing for config and quick fixes.
-- **Seamless zrok Integration** — Works smoothly with `zrok` out of the box. If `zrok` is installed, run with `-z` to get a secure public URL through NAT/firewall without setting up a reverse proxy.
-- **Single Binary, No Bloat** — Compiled with Rust as a single executable. No Node.js runtime, no heavy editor stack, fast startup, and low resource usage.
+## Why Use This?
 
-- **Single binary** — no runtime dependencies, embeds the web UI inside
-- **Multi-terminal tabs** — open multiple PTYs and close each one server-side
-- **Auto-generated token** — no need to set a password manually
-- **Login screen** — enter password on first page before terminal opens
-- **Login rate limit** — 3 failed attempts per 5 minutes per client IP
-- **Expiring web sessions** — login session cookie expires after 30 minutes
-- **Logout controls** — choose logout for current browser or all active web sessions
-- **2-step login by default** — password + PIN required for access
-- **Scrollback replay** — reconnecting clients see previous output
-- **Session resume** — reconnecting tabs/devices continue each terminal session
-- **File explorer + preview** — browse project structure and open shell in selected folder
-- **Built-in editor mode** — switch from preview to edit and save text files in-browser
-- **Traffic meter** — see Today/Session data usage from terminal + file APIs
-- **Data-saving defaults** — manual refresh, file-size guardrails, diff-based saves, HTTP compression
-- **PTY resize** — terminal resizes when you resize the browser window
-- **Cross-platform** — macOS, Linux, Windows (ConPTY)
+### Convenience
 
-## Quick start
+- **Remote CLI from any device**: run builds, scripts, and diagnostics from browser.
+- **Headless-friendly**: no desktop, VNC, or extra daemon required.
+- **Built-in file workflow**: browse, preview, and edit project files in the same UI.
+- **zrok-ready**: use `-z` to publish a URL without manual reverse-proxy setup.
+- **Single binary**: fast startup, minimal dependencies, low resource use.
+
+### Security
+
+- **2-step login**: token + PIN.
+- **Rate limit + lockout**: blocks repeated login failures.
+- **Session expiry + logout controls**: supports current-session and revoke-all behavior.
+- **Origin validation on WebSocket**: mitigates cross-site WS hijacking.
+- **Safe default bind**: `127.0.0.1` by default; public exposure is opt-in.
+
+## Quick Start
 
 ### Install (macOS / Linux)
 
@@ -59,60 +52,43 @@ curl -fsSL https://raw.githubusercontent.com/iylmwysst/CodeWebway/main/install.s
 codewebway -z
 ```
 
-Output:
-```
-  CodeWebway
-  ─────────────────────────────────
-  Token  : A1b2C3d4E5f6G7h8
-  Open   : http://localhost:8080
-  ─────────────────────────────────
-```
+Startup prints token, bind address, and open URL. Open the URL in your browser and login with token + PIN.
 
-Open the URL in your browser — done.
+## CLI Usage
 
-## Usage
-
-```
+```text
 codewebway [OPTIONS]
 
 Options:
   --host <HOST>          Listen host [default: 127.0.0.1]
   --port <PORT>          Listen port [default: 8080]
-  --password <PASSWORD>  Set a fixed token (auto-generated if omitted)
-  --pin <PIN>            Set secondary login PIN (if omitted, interactive hidden prompt)
-  --shell <PATH>         Shell to spawn [default: $SHELL]
-  --cwd <PATH>           Working directory for shell [default: current directory]
-  --scrollback <BYTES>   Scrollback buffer size [default: 131072]
-  -z, --zrok             Create a public zrok URL (requires zrok installed/enabled)
+  --password <PASSWORD>  Fixed token (auto-generated if omitted)
+  --pin <PIN>            Secondary login PIN (prompted if omitted)
+  --shell <PATH>         Shell executable [default: $SHELL]
+  --cwd <PATH>           Working directory [default: current directory]
+  --scrollback <BYTES>   Scrollback size [default: 131072]
+  -z, --zrok             Start zrok public share (zrok required)
   -h, --help             Print help
 ```
 
-### Public URL with zrok
+## Public Access Options
+
+- **zrok (recommended)**
 
 ```bash
 codewebway -z
-# or
-codewebway --zrok
 ```
 
-This starts `zrok share public <port>` automatically and keeps terminal auth in the login page.
-
-### Access from another device
-
-Pair with [Tailscale](https://tailscale.com) or [ngrok](https://ngrok.com) to expose the port:
+- **Tailscale / ngrok** (manual exposure)
 
 ```bash
-# With ngrok
 ngrok http 8080
-
-# With Tailscale — just use your Tailscale IP
-codewebway --port 8080
-# open http://<tailscale-ip>:8080 then enter password
+# or run on tailscale and open http://<tailscale-ip>:8080
 ```
 
-## Build from source
+## Build From Source
 
-Requires [Rust](https://rustup.rs) 1.75+.
+Requirements: [Rust](https://rustup.rs) 1.75+
 
 ```bash
 git clone https://github.com/iylmwysst/CodeWebway
@@ -121,17 +97,17 @@ cargo build --release
 ./target/release/codewebway
 ```
 
-## Tech stack
+## Tech Stack
 
-| Component | Crate |
-|-----------|-------|
-| HTTP + WebSocket | `axum` 0.7 |
-| PTY (cross-platform) | `portable-pty` 0.8 |
-| Async runtime | `tokio` 1 |
-| Embedded assets | `rust-embed` 8 |
-| CLI | `clap` 4 |
-| Frontend | xterm.js 5.3 |
+| Component | Tooling |
+|---|---|
+| HTTP + WebSocket | `axum` |
+| PTY | `portable-pty` |
+| Runtime | `tokio` |
+| Embedded assets | `rust-embed` |
+| CLI | `clap` |
+| Terminal UI | `xterm.js` |
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
+GNU GPL v3.0. See [LICENSE](LICENSE).

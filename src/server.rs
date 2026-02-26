@@ -66,6 +66,11 @@ pub struct CreateTerminalRequest {
 }
 
 #[derive(Deserialize)]
+pub struct RenameTerminalRequest {
+    title: String,
+}
+
+#[derive(Deserialize)]
 pub struct FsQuery {
     path: Option<String>,
 }
@@ -173,6 +178,12 @@ impl TerminalManager {
         };
         let _ = session::close_session(&entry.session);
         true
+    }
+
+    pub fn rename(&mut self, id: &str, title: String) -> Option<TerminalSummary> {
+        let entry = self.entries.get_mut(id)?;
+        entry.summary.title = title;
+        Some(entry.summary.clone())
     }
 
     pub fn remove_all(&mut self) {
@@ -383,7 +394,10 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/logout", post(auth_logout))
         .route("/auth/session", get(auth_session))
         .route("/api/terminals", get(list_terminals).post(create_terminal))
-        .route("/api/terminals/:id", delete(delete_terminal))
+        .route(
+            "/api/terminals/:id",
+            delete(delete_terminal).patch(rename_terminal),
+        )
         .route("/api/fs/tree", get(fs_tree))
         .route("/api/fs/file", get(fs_file).put(save_file))
         .route("/api/fs/file/diff", patch(save_file_diff))
@@ -564,6 +578,34 @@ async fn delete_terminal(
         return StatusCode::NO_CONTENT.into_response();
     }
     (StatusCode::NOT_FOUND, "Terminal not found").into_response()
+}
+
+async fn rename_terminal(
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RenameTerminalRequest>,
+) -> Response {
+    if has_valid_session_cookie(&headers, &state).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let title = req.title.trim();
+    if title.is_empty() {
+        return (StatusCode::BAD_REQUEST, "title cannot be empty").into_response();
+    }
+    if title.chars().count() > 48 {
+        return (StatusCode::BAD_REQUEST, "title is too long").into_response();
+    }
+
+    let renamed = state
+        .terminals
+        .lock()
+        .unwrap()
+        .rename(&id, title.to_string());
+    match renamed {
+        Some(summary) => Json(summary).into_response(),
+        None => (StatusCode::NOT_FOUND, "Terminal not found").into_response(),
+    }
 }
 
 async fn fs_tree(

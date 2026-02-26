@@ -120,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  Open   : {}", url);
     println!("  Bind   : {}", addr);
     println!("  Dir    : {}", working_dir.display());
+    println!("  Login  : use this Token + your PIN on the web login page");
     println!("  ─────────────────────────────────");
     println!();
 
