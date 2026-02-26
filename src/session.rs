@@ -1,9 +1,10 @@
-use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 use bytes::Bytes;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::VecDeque;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 pub struct Scrollback {
     buf: VecDeque<u8>,
@@ -12,7 +13,10 @@ pub struct Scrollback {
 
 impl Scrollback {
     pub fn new(max: usize) -> Self {
-        Self { buf: VecDeque::new(), max }
+        Self {
+            buf: VecDeque::new(),
+            max,
+        }
     }
 
     pub fn push(&mut self, data: &[u8]) {
@@ -74,11 +78,12 @@ pub struct SharedSession {
     pub tx: broadcast::Sender<Bytes>,
     pub pty_writer: Box<dyn Write + Send>,
     pub pty_master: Box<dyn portable_pty::MasterPty + Send>,
+    pub child: Box<dyn portable_pty::Child + Send>,
 }
 
 pub type Session = Arc<Mutex<SharedSession>>;
 
-pub fn spawn_session(shell: &str, scrollback_size: usize) -> anyhow::Result<Session> {
+pub fn spawn_session(shell: &str, cwd: &Path, scrollback_size: usize) -> anyhow::Result<Session> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
         rows: 24,
@@ -89,7 +94,8 @@ pub fn spawn_session(shell: &str, scrollback_size: usize) -> anyhow::Result<Sess
 
     let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", "xterm-256color");
-    let _child = pair.slave.spawn_command(cmd)?;
+    cmd.cwd(cwd);
+    let child = pair.slave.spawn_command(cmd)?;
 
     let (tx, _) = broadcast::channel::<Bytes>(256);
 
@@ -102,6 +108,7 @@ pub fn spawn_session(shell: &str, scrollback_size: usize) -> anyhow::Result<Sess
         tx: tx.clone(),
         pty_writer,
         pty_master: pair.master,
+        child,
     }));
 
     // Spawn PTY reader thread
@@ -122,4 +129,10 @@ pub fn spawn_session(shell: &str, scrollback_size: usize) -> anyhow::Result<Sess
     });
 
     Ok(session)
+}
+
+pub fn close_session(session: &Session) -> anyhow::Result<()> {
+    let mut shared = session.lock().unwrap();
+    let _ = shared.child.kill();
+    Ok(())
 }

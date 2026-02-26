@@ -7,28 +7,27 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #1e1e1e; color: #ddd; font-family: ui-sans-serif, -apple-system, Segoe UI, sans-serif; height: 100vh; }
+    body { background: #131313; color: #ddd; font-family: ui-sans-serif, -apple-system, Segoe UI, sans-serif; height: 100vh; }
     #login {
       height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 24px;
-      background: radial-gradient(circle at top, #2b2b2b, #171717 70%);
+      background: radial-gradient(circle at top, #2a2a2a, #111 70%);
     }
     .card {
       width: 100%;
-      max-width: 420px;
-      background: rgba(0, 0, 0, 0.4);
+      max-width: 460px;
+      background: rgba(0, 0, 0, 0.45);
       border: 1px solid #3f3f3f;
       border-radius: 12px;
-      padding: 24px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      padding: 22px;
     }
     .card h1 { font-size: 20px; margin-bottom: 8px; }
-    .card p { color: #aaa; margin-bottom: 16px; font-size: 14px; }
-    .row { display: flex; gap: 10px; }
+    .card p { color: #aaa; margin-bottom: 14px; font-size: 14px; }
     .stack { display: flex; flex-direction: column; gap: 10px; }
+    .row { display: flex; gap: 8px; }
     input {
       width: 100%;
       background: #111;
@@ -39,50 +38,118 @@
       font-size: 14px;
       outline: none;
     }
-    input:focus { border-color: #5f8cff; }
     button {
-      border: 0;
+      border: 1px solid #4f4f4f;
       border-radius: 8px;
-      background: #5f8cff;
+      background: #2f65ff;
       color: #fff;
-      font-weight: 600;
-      padding: 10px 14px;
+      padding: 10px 12px;
+      font-size: 13px;
       cursor: pointer;
     }
-    button:disabled { opacity: 0.7; cursor: wait; }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    .ghost { background: #2d2d2d; }
     #error { color: #ff8a80; margin-top: 10px; min-height: 20px; font-size: 13px; }
+
     #app { display: none; height: 100vh; flex-direction: column; }
     #topbar {
-      background: #333;
-      color: #aaa;
+      border-bottom: 1px solid #2f2f2f;
+      background: #1b1b1b;
+      color: #c8c8c8;
       font-family: monospace;
       font-size: 12px;
-      padding: 4px 8px;
+      padding: 6px 10px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
     }
-    #logout {
-      background: #555;
-      border: 1px solid #666;
-      color: #eee;
-      font-size: 12px;
-      padding: 4px 10px;
-      border-radius: 6px;
+    #workspace { flex: 1; display: flex; min-height: 0; }
+    #files {
+      width: 34%;
+      min-width: 260px;
+      border-right: 1px solid #2f2f2f;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: #171717;
     }
-    #terminal { flex: 1; padding: 4px; }
+    #file-head {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px;
+      border-bottom: 1px solid #2f2f2f;
+    }
+    #tree { flex: 1; overflow: auto; padding: 8px; border-bottom: 1px solid #2f2f2f; }
+    #preview-tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 8px;
+      border-bottom: 1px solid #2f2f2f;
+    }
+    #preview {
+      flex: 1;
+      overflow: auto;
+      padding: 10px;
+      font-family: ui-monospace, Menlo, monospace;
+      white-space: pre;
+      font-size: 12px;
+      color: #ddd;
+    }
+    .tree-item {
+      padding: 4px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .tree-item:hover { background: #222; }
+    .tree-item.active { background: #2b2b2b; }
+    .indent { margin-left: 12px; border-left: 1px dotted #444; padding-left: 8px; }
+
+    #terms { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    #term-tabs {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      overflow-x: auto;
+      border-bottom: 1px solid #2f2f2f;
+      padding: 8px;
+      background: #161616;
+    }
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: 7px;
+      border: 1px solid #383838;
+      background: #232323;
+      cursor: pointer;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .tab.active { border-color: #2f65ff; }
+    .tab button {
+      padding: 2px 6px;
+      background: #3a3a3a;
+      border-color: #575757;
+      font-size: 11px;
+    }
+    #terminal { flex: 1; min-height: 0; padding: 6px; }
   </style>
 </head>
 <body>
   <div id="login">
     <form class="card" id="login-form">
       <h1>rust-webtty</h1>
-      <p>Enter password and PIN to open terminal</p>
+      <p>Enter password and PIN to open workspace</p>
       <div class="stack">
         <input id="password" type="password" autocomplete="current-password" placeholder="Password" required />
         <div class="row">
-          <input id="pin" type="password" autocomplete="one-time-code" placeholder="PIN (if configured)" />
+          <input id="pin" type="password" autocomplete="one-time-code" placeholder="PIN" />
           <button id="submit" type="submit">Connect</button>
         </div>
       </div>
@@ -92,10 +159,26 @@
 
   <div id="app">
     <div id="topbar">
-      <div id="status">Connecting...</div>
-      <button id="logout" type="button">Logout</button>
+      <div id="status">Connected</div>
+      <button id="logout" class="ghost" type="button">Logout</button>
     </div>
-    <div id="terminal"></div>
+    <div id="workspace">
+      <section id="files">
+        <div id="file-head">
+          <strong>Files</strong>
+          <button id="open-shell-here" class="ghost" type="button">Open Shell Here</button>
+        </div>
+        <div id="tree"></div>
+        <div id="preview-tabs"></div>
+        <pre id="preview">Select a file to preview</pre>
+      </section>
+      <section id="terms">
+        <div id="term-tabs">
+          <button id="new-tab" type="button">+ New Tab</button>
+        </div>
+        <div id="terminal"></div>
+      </section>
+    </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
@@ -108,8 +191,14 @@
     const pinInput = document.getElementById('pin');
     const submitBtn = document.getElementById('submit');
     const errorEl = document.getElementById('error');
-    const status = document.getElementById('status');
+    const statusEl = document.getElementById('status');
     const logoutBtn = document.getElementById('logout');
+    const newTabBtn = document.getElementById('new-tab');
+    const termTabs = document.getElementById('term-tabs');
+    const treeEl = document.getElementById('tree');
+    const previewTabsEl = document.getElementById('preview-tabs');
+    const previewEl = document.getElementById('preview');
+    const openShellHereBtn = document.getElementById('open-shell-here');
 
     let ws;
     let retries = 0;
@@ -118,9 +207,26 @@
     let loggingOut = false;
     let logoutNotice = '';
 
+    let terminals = [];
+    let activeTerminalId = null;
+    let selectedDir = '.';
+
+    const openFiles = [];
+    let activeFilePath = null;
+
+    function setStatus(text, color) {
+      statusEl.textContent = text;
+      statusEl.style.color = color || '#c8c8c8';
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, options);
+      return res;
+    }
+
     async function hasActiveSession() {
       try {
-        const res = await fetch('/auth/session', { method: 'GET' });
+        const res = await api('/auth/session', { method: 'GET' });
         return res.ok;
       } catch {
         return false;
@@ -136,32 +242,67 @@
       if (message) {
         errorEl.textContent = message;
       }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
     }
 
-    function connect() {
-      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+    function initTerminal() {
+      if (term) return;
+      term = new Terminal({ cursorBlink: true, theme: { background: '#131313' } });
+      fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(document.getElementById('terminal'));
+      fitAddon.fit();
+
+      term.onData((data) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(data));
+        }
+      });
+
+      window.addEventListener('resize', () => {
+        fitAddon.fit();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      });
+    }
+
+    function closeSocket() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close();
+      }
+      ws = null;
+    }
+
+    function connectTerminal(terminalId) {
+      activeTerminalId = terminalId;
+      renderTerminalTabs();
+      if (term) {
+        term.clear();
+      }
+      closeSocket();
+
+      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?terminal_id=${encodeURIComponent(terminalId)}`;
       let hasOpened = false;
       ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
         hasOpened = true;
-        status.textContent = 'Connected';
-        status.style.color = '#4caf50';
         retries = 0;
+        setStatus(`Connected: ${terminalId}`, '#4caf50');
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
       };
 
       ws.onmessage = (e) => {
         if (typeof e.data === 'string') {
           const msg = JSON.parse(e.data);
-          if (msg.type === 'shell_exit') {
-            status.textContent = 'Shell exited — refresh to reconnect';
-            status.style.color = '#f44336';
-          } else if (msg.type === 'session_expired') {
+          if (msg.type === 'session_expired') {
             showLogin('Session expired. Please login again.');
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.close();
-            }
           }
         } else {
           term.write(new Uint8Array(e.data));
@@ -183,55 +324,197 @@
           return;
         }
 
-        status.textContent = `Disconnected — retrying (${retries + 1})...`;
-        status.style.color = '#ff9800';
-        if (hasOpened && retries < 5) {
+        if (hasOpened && retries < 4) {
           retries++;
-          setTimeout(connect, Math.min(1000 * retries, 5000));
+          setStatus(`Reconnecting (${retries})...`, '#ff9800');
+          setTimeout(() => connectTerminal(terminalId), 600 * retries);
         } else {
-          showLogin('Connection failed. Please login again.');
+          setStatus('Disconnected', '#ff9800');
         }
       };
 
       ws.onerror = () => ws.close();
     }
 
-    function initTerminal() {
-      term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
-      fitAddon = new FitAddon.FitAddon();
-      term.loadAddon(fitAddon);
-      term.open(document.getElementById('terminal'));
-      fitAddon.fit();
-
-      term.onData((data) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode(data));
-        }
-      });
-
-      window.addEventListener('resize', () => {
-        fitAddon.fit();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-        }
-      });
-    }
-
     async function authorize(password, pin) {
-      const res = await fetch('/auth/login', {
+      return api('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password, pin })
       });
-      return res;
     }
 
     async function logout(revokeAll) {
-      await fetch('/auth/logout', {
+      await api('/auth/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ revoke_all: revokeAll })
       });
+    }
+
+    async function loadTerminals() {
+      const res = await api('/api/terminals');
+      if (!res.ok) throw new Error('failed terminals');
+      terminals = await res.json();
+      if (terminals.length === 0) {
+        await createTerminal('.');
+      }
+      renderTerminalTabs();
+      if (!activeTerminalId || !terminals.some((t) => t.id === activeTerminalId)) {
+        connectTerminal(terminals[0].id);
+      }
+    }
+
+    async function createTerminal(cwd) {
+      const res = await api('/api/terminals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: cwd || '.' })
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        alert(msg || 'Cannot create terminal');
+        return null;
+      }
+      const item = await res.json();
+      terminals.push(item);
+      renderTerminalTabs();
+      connectTerminal(item.id);
+      return item;
+    }
+
+    async function deleteTerminal(id) {
+      const res = await api(`/api/terminals/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.status !== 204) {
+        alert('Cannot close terminal');
+        return;
+      }
+      terminals = terminals.filter((t) => t.id !== id);
+      if (activeTerminalId === id) {
+        if (terminals.length === 0) {
+          await createTerminal(selectedDir || '.');
+        } else {
+          connectTerminal(terminals[0].id);
+        }
+      }
+      renderTerminalTabs();
+    }
+
+    function renderTerminalTabs() {
+      termTabs.querySelectorAll('.tab').forEach((node) => node.remove());
+      terminals.forEach((item) => {
+        const tab = document.createElement('div');
+        tab.className = `tab ${item.id === activeTerminalId ? 'active' : ''}`;
+        tab.innerHTML = `<span>${item.title}</span>`;
+        tab.onclick = () => connectTerminal(item.id);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = 'x';
+        closeBtn.onclick = (e) => {
+          e.stopPropagation();
+          deleteTerminal(item.id);
+        };
+        tab.appendChild(closeBtn);
+        termTabs.appendChild(tab);
+      });
+    }
+
+    async function fetchTree(path) {
+      const res = await api(`/api/fs/tree?path=${encodeURIComponent(path)}`);
+      if (!res.ok) return null;
+      return res.json();
+    }
+
+    async function fetchFile(path) {
+      const res = await api(`/api/fs/file?path=${encodeURIComponent(path)}`);
+      if (!res.ok) return null;
+      return res.json();
+    }
+
+    function parentPath(path) {
+      if (!path || path === '.') return '.';
+      const idx = path.lastIndexOf('/');
+      if (idx <= 0) return '.';
+      return path.slice(0, idx);
+    }
+
+    function renderPreviewTabs() {
+      previewTabsEl.innerHTML = '';
+      if (openFiles.length === 0) {
+        previewEl.textContent = 'Select a file to preview';
+        return;
+      }
+      openFiles.forEach((file) => {
+        const btn = document.createElement('button');
+        btn.className = file.path === activeFilePath ? '' : 'ghost';
+        btn.textContent = file.path.split('/').pop();
+        btn.onclick = () => {
+          activeFilePath = file.path;
+          previewEl.textContent = file.content + (file.truncated ? '\n\n[truncated]' : '');
+          renderPreviewTabs();
+        };
+        previewTabsEl.appendChild(btn);
+      });
+    }
+
+    async function openFile(path) {
+      const file = await fetchFile(path);
+      if (!file) return;
+      const existing = openFiles.find((item) => item.path === file.path);
+      if (!existing) {
+        openFiles.push(file);
+      }
+      activeFilePath = file.path;
+      previewEl.textContent = file.content + (file.truncated ? '\n\n[truncated]' : '');
+      renderPreviewTabs();
+      selectedDir = parentPath(file.path);
+    }
+
+    async function renderTree() {
+      treeEl.innerHTML = '';
+      const root = await fetchTree('.');
+      if (!root) {
+        treeEl.textContent = 'Failed to load file tree';
+        return;
+      }
+
+      const renderNodes = async (container, path, depth) => {
+        const tree = await fetchTree(path);
+        if (!tree) return;
+        for (const entry of tree.entries) {
+          const row = document.createElement('div');
+          row.className = 'tree-item';
+          row.style.marginLeft = `${depth * 12}px`;
+          row.textContent = `${entry.is_dir ? '📁' : '📄'} ${entry.name}`;
+          container.appendChild(row);
+
+          if (entry.is_dir) {
+            row.onclick = async () => {
+              selectedDir = entry.path;
+              const next = document.createElement('div');
+              next.className = 'indent';
+              if (row.nextSibling && row.nextSibling.classList.contains('indent')) {
+                row.nextSibling.remove();
+                return;
+              }
+              row.after(next);
+              await renderNodes(next, entry.path, depth + 1);
+            };
+          } else {
+            row.onclick = () => openFile(entry.path);
+          }
+        }
+      };
+
+      await renderNodes(treeEl, '.', 0);
+    }
+
+    async function bootstrapWorkspace() {
+      initTerminal();
+      login.style.display = 'none';
+      app.style.display = 'flex';
+      await Promise.all([loadTerminals(), renderTree()]);
+      if (fitAddon) fitAddon.fit();
     }
 
     form.addEventListener('submit', async (e) => {
@@ -260,31 +543,31 @@
         return;
       }
 
-      login.style.display = 'none';
-      app.style.display = 'flex';
-      initTerminal();
-      connect();
+      submitBtn.disabled = false;
+      await bootstrapWorkspace();
     });
+
+    newTabBtn.addEventListener('click', () => createTerminal(selectedDir || '.'));
+
+    openShellHereBtn.addEventListener('click', () => createTerminal(selectedDir || '.'));
 
     logoutBtn.addEventListener('click', async () => {
       const confirmLogout = window.confirm('Log out now?');
-      if (!confirmLogout) {
-        return;
-      }
-      const revokeAll = window.confirm('Also close all active web sessions?\nOK = close all sessions\nCancel = only this browser');
+      if (!confirmLogout) return;
+
+      const lockSystem = window.confirm(
+        'Close system now?\nOK = lock access until server restart\nCancel = logout only (you can login again elsewhere)'
+      );
       loggingOut = true;
-      logoutNotice = revokeAll
+      logoutNotice = lockSystem
         ? 'Logged out and locked access. Restart rust-webtty to login again.'
         : 'Logged out.';
-      await logout(revokeAll);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      } else {
-        const notice = logoutNotice;
-        loggingOut = false;
-        logoutNotice = '';
-        showLogin(notice);
-      }
+
+      await logout(lockSystem);
+      closeSocket();
+      showLogin(logoutNotice);
+      loggingOut = false;
+      logoutNotice = '';
     });
   </script>
 </body>

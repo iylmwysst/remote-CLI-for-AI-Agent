@@ -1,33 +1,40 @@
-use std::io::Write;
 use std::collections::{HashMap, VecDeque};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::{
+    extract::{
+        ws::{Message, WebSocket},
+        Json, Path as AxumPath, Query, State, WebSocketUpgrade,
+    },
+    http::{header, HeaderMap, StatusCode},
+    response::{Html, IntoResponse, Response},
+    routing::{delete, get, post},
+    Router,
+};
 use portable_pty::PtySize;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
-
-use axum::{
-    extract::{Json, State, WebSocketUpgrade},
-    extract::ws::{Message, WebSocket},
-    http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
-    routing::{get, post},
-    Router,
-};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::assets::Assets;
-use crate::session::Session;
+use crate::session::{self, Session};
+
+const MAX_FILE_PREVIEW_BYTES: usize = 256 * 1024;
 
 pub struct AppState {
-    pub session: Session,
     pub password: String,
     pub pin: Option<String>,
     pub failed_logins: Mutex<FailedLoginTracker>,
     pub sessions: Mutex<SessionStore>,
     pub access_locked: Mutex<bool>,
+    pub terminals: Mutex<TerminalManager>,
+    pub default_shell: String,
+    pub root_dir: PathBuf,
+    pub scrollback: usize,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +46,141 @@ pub struct LoginRequest {
 #[derive(Deserialize)]
 pub struct LogoutRequest {
     revoke_all: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct WsQuery {
+    terminal_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateTerminalRequest {
+    cwd: Option<String>,
+    shell: Option<String>,
+    title: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct FsQuery {
+    path: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct TerminalSummary {
+    id: String,
+    title: String,
+    cwd: String,
+    shell: String,
+}
+
+#[derive(Clone)]
+struct TerminalEntry {
+    summary: TerminalSummary,
+    session: Session,
+}
+
+pub struct TerminalManager {
+    entries: HashMap<String, TerminalEntry>,
+    max_tabs: usize,
+}
+
+impl TerminalManager {
+    pub fn new(max_tabs: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            max_tabs,
+        }
+    }
+
+    fn make_terminal_id(&self) -> String {
+        loop {
+            let id: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(8)
+                .map(char::from)
+                .collect();
+            if !self.entries.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    pub fn create(
+        &mut self,
+        title: String,
+        cwd: PathBuf,
+        shell: String,
+        scrollback: usize,
+    ) -> anyhow::Result<TerminalSummary> {
+        if self.entries.len() >= self.max_tabs {
+            anyhow::bail!("Maximum number of terminal tabs reached");
+        }
+        let session = session::spawn_session(&shell, &cwd, scrollback)?;
+        let id = self.make_terminal_id();
+        let summary = TerminalSummary {
+            id: id.clone(),
+            title,
+            cwd: cwd.display().to_string(),
+            shell,
+        };
+        self.entries.insert(
+            id,
+            TerminalEntry {
+                summary: summary.clone(),
+                session,
+            },
+        );
+        Ok(summary)
+    }
+
+    pub fn list(&self) -> Vec<TerminalSummary> {
+        let mut out: Vec<TerminalSummary> = self
+            .entries
+            .values()
+            .map(|entry| entry.summary.clone())
+            .collect();
+        out.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
+
+    pub fn get_session(&self, id: &str) -> Option<Session> {
+        self.entries.get(id).map(|entry| Arc::clone(&entry.session))
+    }
+
+    pub fn remove(&mut self, id: &str) -> bool {
+        let Some(entry) = self.entries.remove(id) else {
+            return false;
+        };
+        let _ = session::close_session(&entry.session);
+        true
+    }
+
+    pub fn remove_all(&mut self) {
+        let ids: Vec<String> = self.entries.keys().cloned().collect();
+        for id in ids {
+            let _ = self.remove(&id);
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct FsTreeResponse {
+    path: String,
+    entries: Vec<FsEntry>,
+}
+
+#[derive(Serialize)]
+struct FsEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+#[derive(Serialize)]
+struct FsFileResponse {
+    path: String,
+    content: String,
+    truncated: bool,
 }
 
 pub struct FailedLoginTracker {
@@ -141,6 +283,10 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(auth_login))
         .route("/auth/logout", post(auth_logout))
         .route("/auth/session", get(auth_session))
+        .route("/api/terminals", get(list_terminals).post(create_terminal))
+        .route("/api/terminals/:id", delete(delete_terminal))
+        .route("/api/fs/tree", get(fs_tree))
+        .route("/api/fs/file", get(fs_file))
         .route("/ws", get(ws_handler))
         .with_state(Arc::new(state))
 }
@@ -188,12 +334,7 @@ async fn auth_login(
             "webtty_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800",
             session_token
         );
-        return (
-            StatusCode::OK,
-            [(header::SET_COOKIE, set_cookie)],
-            "OK",
-        )
-            .into_response();
+        return (StatusCode::OK, [(header::SET_COOKIE, set_cookie)], "OK").into_response();
     }
     limiter.record_failure(&client, now);
 
@@ -232,6 +373,7 @@ async fn auth_logout(
             }
             sessions.revoke_all();
             *state.access_locked.lock().unwrap() = true;
+            state.terminals.lock().unwrap().remove_all();
         } else {
             sessions.revoke(&current);
         }
@@ -250,9 +392,177 @@ async fn auth_logout(
         .into_response()
 }
 
+async fn list_terminals(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
+    if has_valid_session_cookie(&headers, &state).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let items = state.terminals.lock().unwrap().list();
+    Json(items).into_response()
+}
+
+async fn create_terminal(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTerminalRequest>,
+) -> Response {
+    if has_valid_session_cookie(&headers, &state).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let cwd = match resolve_user_path(&state.root_dir, req.cwd.as_deref()) {
+        Ok(path) => path,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+    if !cwd.is_dir() {
+        return (StatusCode::BAD_REQUEST, "cwd must be an existing directory").into_response();
+    }
+
+    let shell = req.shell.unwrap_or_else(|| state.default_shell.clone());
+    let title = req.title.unwrap_or_else(|| {
+        cwd.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("terminal")
+            .to_string()
+    });
+
+    let created = match state
+        .terminals
+        .lock()
+        .unwrap()
+        .create(title, cwd, shell, state.scrollback)
+    {
+        Ok(summary) => summary,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+
+    (StatusCode::CREATED, Json(created)).into_response()
+}
+
+async fn delete_terminal(
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if has_valid_session_cookie(&headers, &state).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let removed = state.terminals.lock().unwrap().remove(&id);
+    if removed {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    (StatusCode::NOT_FOUND, "Terminal not found").into_response()
+}
+
+async fn fs_tree(
+    headers: HeaderMap,
+    Query(query): Query<FsQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if has_valid_session_cookie(&headers, &state).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let path = match resolve_user_path(&state.root_dir, query.path.as_deref()) {
+        Ok(path) => path,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+    if !path.is_dir() {
+        return (StatusCode::BAD_REQUEST, "path must be a directory").into_response();
+    }
+
+    let mut entries: Vec<FsEntry> = match std::fs::read_dir(&path) {
+        Ok(read_dir) => read_dir
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let file_type = entry.file_type().ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                if name.starts_with('.') {
+                    return None;
+                }
+                let abs = entry.path();
+                let rel = abs
+                    .strip_prefix(&state.root_dir)
+                    .ok()?
+                    .to_string_lossy()
+                    .to_string();
+                Some(FsEntry {
+                    name,
+                    path: rel,
+                    is_dir: file_type.is_dir(),
+                })
+            })
+            .collect(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to read directory",
+            )
+                .into_response()
+        }
+    };
+
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+
+    let rel_path = path
+        .strip_prefix(&state.root_dir)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+
+    Json(FsTreeResponse {
+        path: rel_path,
+        entries,
+    })
+    .into_response()
+}
+
+async fn fs_file(
+    headers: HeaderMap,
+    Query(query): Query<FsQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if has_valid_session_cookie(&headers, &state).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let path = match resolve_user_path(&state.root_dir, query.path.as_deref()) {
+        Ok(path) => path,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return (StatusCode::BAD_REQUEST, "unable to read file").into_response(),
+    };
+
+    let truncated = bytes.len() > MAX_FILE_PREVIEW_BYTES;
+    let slice = if truncated {
+        &bytes[..MAX_FILE_PREVIEW_BYTES]
+    } else {
+        &bytes[..]
+    };
+    let content = String::from_utf8_lossy(slice).to_string();
+
+    let rel_path = path
+        .strip_prefix(&state.root_dir)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+
+    Json(FsFileResponse {
+        path: rel_path,
+        content,
+        truncated,
+    })
+    .into_response()
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: HeaderMap,
+    Query(query): Query<WsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
     if !is_allowed_origin(&headers) {
@@ -261,18 +571,35 @@ async fn ws_handler(
     let Some(session_token) = has_valid_session_cookie(&headers, &state) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_token))
+
+    let Some(terminal_id) = query.terminal_id else {
+        return (StatusCode::BAD_REQUEST, "terminal_id is required").into_response();
+    };
+    let terminal_session = {
+        let manager = state.terminals.lock().unwrap();
+        manager.get_session(&terminal_id)
+    };
+    let Some(terminal_session) = terminal_session else {
+        return (StatusCode::NOT_FOUND, "Terminal not found").into_response();
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session_token, terminal_session))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, session_token: String) {
-    // Send scrollback to newly connected client, then subscribe to broadcast
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    session_token: String,
+    terminal: Session,
+) {
     let (scrollback, mut rx) = {
-        let s = state.session.lock().unwrap();
+        let s = terminal.lock().unwrap();
         (s.scrollback.snapshot(), s.tx.subscribe())
     };
     if !scrollback.is_empty() {
         let _ = socket.send(Message::Binary(scrollback.into())).await;
     }
+
     let mut session_tick = tokio::time::interval(Duration::from_secs(15));
 
     loop {
@@ -286,7 +613,6 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, session_toke
                     break;
                 }
             }
-            // PTY output → browser
             result = rx.recv() => {
                 match result {
                     Ok(data) => {
@@ -298,11 +624,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, session_toke
                     Err(_) => break,
                 }
             }
-            // Browser input → PTY
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Binary(data))) => {
-                        let mut s = state.session.lock().unwrap();
+                        let mut s = terminal.lock().unwrap();
                         let _ = s.pty_writer.write_all(&data);
                     }
                     Some(Ok(Message::Text(text))) => {
@@ -310,7 +635,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, session_toke
                             if msg["type"] == "resize" {
                                 let cols = msg["cols"].as_u64().unwrap_or(80) as u16;
                                 let rows = msg["rows"].as_u64().unwrap_or(24) as u16;
-                                let s = state.session.lock().unwrap();
+                                let s = terminal.lock().unwrap();
                                 let _ = s.pty_master.resize(PtySize {
                                     rows,
                                     cols,
@@ -328,13 +653,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, session_toke
     }
 }
 
-/// Constant-time token comparison (XOR fold).
-/// Note: length check leaks password length via timing — acceptable for a local dev tool.
 pub fn check_token(token: &str, password: &str) -> bool {
     if token.len() != password.len() {
         return false;
     }
-    token.as_bytes().iter().zip(password.as_bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    token
+        .as_bytes()
+        .iter()
+        .zip(password.as_bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 fn has_valid_session_cookie(headers: &HeaderMap, state: &Arc<AppState>) -> Option<String> {
@@ -346,7 +674,10 @@ fn has_valid_session_cookie(headers: &HeaderMap, state: &Arc<AppState>) -> Optio
 }
 
 fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
-    let raw_cookie = match headers.get(header::COOKIE).and_then(|value| value.to_str().ok()) {
+    let raw_cookie = match headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+    {
         Some(value) => value,
         None => return None,
     };
@@ -376,7 +707,6 @@ fn client_key_from_headers(headers: &HeaderMap) -> String {
         .get("x-forwarded-for")
         .and_then(|value| value.to_str().ok())
     {
-        // Use left-most hop as originating client.
         if let Some(client) = forwarded.split(',').next() {
             let trimmed = client.trim();
             if !trimmed.is_empty() {
@@ -430,6 +760,31 @@ fn verify_pin(input: Option<&str>, expected: Option<&str>) -> bool {
     }
 }
 
+fn resolve_user_path(root_dir: &Path, requested: Option<&str>) -> Result<PathBuf, &'static str> {
+    let relative = requested.unwrap_or(".");
+    let rel_path = Path::new(relative);
+    if rel_path.is_absolute() {
+        return Err("absolute paths are not allowed");
+    }
+    if rel_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("parent path segments are not allowed");
+    }
+
+    let abs = root_dir.join(rel_path);
+    if !abs.exists() {
+        return Err("path does not exist");
+    }
+
+    let canonical = abs.canonicalize().map_err(|_| "invalid path")?;
+    if !canonical.starts_with(root_dir) {
+        return Err("path is outside allowed root");
+    }
+    Ok(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,10 +836,7 @@ mod tests {
     #[test]
     fn test_client_key_from_forwarded_for() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            "203.0.113.8, 10.0.0.1".parse().unwrap(),
-        );
+        headers.insert("x-forwarded-for", "203.0.113.8, 10.0.0.1".parse().unwrap());
         assert_eq!(client_key_from_headers(&headers), "203.0.113.8");
     }
 
@@ -521,7 +873,10 @@ mod tests {
             header::COOKIE,
             "foo=1; webtty_session=abc123".parse().unwrap(),
         );
-        assert_eq!(session_token_from_headers(&headers), Some("abc123".to_string()));
+        assert_eq!(
+            session_token_from_headers(&headers),
+            Some("abc123".to_string())
+        );
     }
 
     #[test]

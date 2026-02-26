@@ -12,7 +12,7 @@ Browser ←── WebSocket ──→ rust-webtty ←──→ $SHELL (PTY)
 ```
 
 - **Single binary** — no runtime dependencies, embeds the web UI inside
-- **Shared session** — all browser tabs see the same terminal (like tmux over the web)
+- **Multi-terminal tabs** — open multiple PTYs and close each one server-side
 - **Auto-generated token** — no need to set a password manually
 - **Login screen** — enter password on first page before terminal opens
 - **Login rate limit** — 3 failed attempts per 5 minutes per client IP
@@ -20,6 +20,8 @@ Browser ←── WebSocket ──→ rust-webtty ←──→ $SHELL (PTY)
 - **Logout controls** — choose logout for current browser or all active web sessions
 - **2-step login by default** — password + PIN required for access
 - **Scrollback replay** — reconnecting clients see previous output
+- **Session resume** — reconnecting tabs/devices continue each terminal session
+- **File explorer + preview** — browse project structure and open shell in selected folder
 - **PTY resize** — terminal resizes when you resize the browser window
 - **Cross-platform** — macOS, Linux, Windows (ConPTY)
 
@@ -59,6 +61,7 @@ Options:
   --password <PASSWORD>  Set a fixed token (auto-generated if omitted)
   --pin <PIN>            Set secondary login PIN (if omitted, interactive hidden prompt)
   --shell <PATH>         Shell to spawn [default: $SHELL]
+  --cwd <PATH>           Working directory for shell [default: current directory]
   --scrollback <BYTES>   Scrollback buffer size [default: 10240]
   -z, --zrok             Create a public zrok URL (requires zrok installed/enabled)
   -h, --help             Print help

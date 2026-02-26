@@ -1,7 +1,10 @@
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rust-webtty", about = "Browser-accessible terminal over WebSocket")]
+#[command(
+    name = "rust-webtty",
+    about = "Browser-accessible terminal over WebSocket"
+)]
 pub struct Config {
     /// Host/IP to bind (default: localhost only)
     #[arg(long, default_value = "127.0.0.1")]
@@ -22,6 +25,10 @@ pub struct Config {
     /// Shell to spawn (default: $SHELL on Unix, cmd.exe on Windows)
     #[arg(long)]
     pub shell: Option<String>,
+
+    /// Working directory for spawned shell (default: current directory)
+    #[arg(long)]
+    pub cwd: Option<String>,
 
     /// Scrollback buffer size in bytes
     #[arg(long, default_value_t = 10240)]
@@ -104,6 +111,12 @@ mod tests {
     fn test_shell_override() {
         let cfg = Config::parse_from(["rust-webtty", "--shell", "/bin/bash"]);
         assert_eq!(cfg.shell_path(), "/bin/bash");
+    }
+
+    #[test]
+    fn test_cwd_stored() {
+        let cfg = Config::parse_from(["rust-webtty", "--cwd", "/tmp"]);
+        assert_eq!(cfg.cwd, Some("/tmp".to_string()));
     }
 
     #[test]
