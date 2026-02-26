@@ -4,10 +4,11 @@ use std::sync::Arc;
 use portable_pty::PtySize;
 
 use axum::{
-    extract::{Query, State, WebSocketUpgrade},
+    extract::{Json, State, WebSocketUpgrade},
     extract::ws::{Message, WebSocket},
+    http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -20,16 +21,18 @@ use crate::session::Session;
 pub struct AppState {
     pub session: Session,
     pub password: String,
+    pub session_cookie: String,
 }
 
 #[derive(Deserialize)]
-pub struct WsQuery {
-    token: Option<String>,
+pub struct LoginRequest {
+    password: String,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve_index))
+        .route("/auth/login", post(auth_login))
         .route("/ws", get(ws_handler))
         .with_state(Arc::new(state))
 }
@@ -39,14 +42,33 @@ async fn serve_index() -> impl IntoResponse {
     Html(std::str::from_utf8(html.data.as_ref()).unwrap().to_string())
 }
 
+async fn auth_login(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoginRequest>,
+) -> Response {
+    if check_token(&req.password, &state.password) {
+        let set_cookie = format!(
+            "webtty_session={}; HttpOnly; SameSite=Strict; Path=/",
+            state.session_cookie
+        );
+        return (
+            StatusCode::OK,
+            [(header::SET_COOKIE, set_cookie)],
+            "OK",
+        )
+            .into_response();
+    }
+    (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    Query(q): Query<WsQuery>,
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let token = q.token.unwrap_or_default();
-    if !check_token(&token, &state.password) {
-        return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    let authorized = has_valid_session_cookie(&headers, &state.session_cookie);
+    if !authorized {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
@@ -114,6 +136,30 @@ pub fn check_token(token: &str, password: &str) -> bool {
     token.as_bytes().iter().zip(password.as_bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
+fn has_valid_session_cookie(headers: &HeaderMap, expected: &str) -> bool {
+    let raw_cookie = match headers.get(header::COOKIE).and_then(|value| value.to_str().ok()) {
+        Some(value) => value,
+        None => return false,
+    };
+    let Some(session) = cookie_value(raw_cookie, "webtty_session") else {
+        return false;
+    };
+    check_token(session, expected)
+}
+
+fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    for part in cookie_header.split(';') {
+        let trimmed = part.trim();
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key == name {
+            return Some(value);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +182,17 @@ mod tests {
     #[test]
     fn test_token_length_mismatch() {
         assert!(!check_token("sec", "secret"));
+    }
+
+    #[test]
+    fn test_cookie_value_found() {
+        let value = cookie_value("foo=1; webtty_session=abc123; bar=2", "webtty_session");
+        assert_eq!(value, Some("abc123"));
+    }
+
+    #[test]
+    fn test_cookie_value_missing() {
+        let value = cookie_value("foo=1; bar=2", "webtty_session");
+        assert_eq!(value, None);
     }
 }

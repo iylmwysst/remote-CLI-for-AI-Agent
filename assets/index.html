@@ -7,32 +7,90 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #1e1e1e; display: flex; flex-direction: column; height: 100vh; }
+    body { background: #1e1e1e; color: #ddd; font-family: ui-sans-serif, -apple-system, Segoe UI, sans-serif; height: 100vh; }
+    #login {
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: radial-gradient(circle at top, #2b2b2b, #171717 70%);
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid #3f3f3f;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+    .card h1 { font-size: 20px; margin-bottom: 8px; }
+    .card p { color: #aaa; margin-bottom: 16px; font-size: 14px; }
+    .row { display: flex; gap: 10px; }
+    input {
+      width: 100%;
+      background: #111;
+      border: 1px solid #444;
+      color: #eee;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+    input:focus { border-color: #5f8cff; }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: #5f8cff;
+      color: #fff;
+      font-weight: 600;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.7; cursor: wait; }
+    #error { color: #ff8a80; margin-top: 10px; min-height: 20px; font-size: 13px; }
+    #app { display: none; height: 100vh; flex-direction: column; }
     #terminal { flex: 1; padding: 4px; }
     #status { background: #333; color: #aaa; font-family: monospace; font-size: 12px; padding: 2px 8px; }
   </style>
 </head>
 <body>
-  <div id="status">Connecting...</div>
-  <div id="terminal"></div>
+  <div id="login">
+    <form class="card" id="login-form">
+      <h1>rust-webtty</h1>
+      <p>Enter password to open terminal</p>
+      <div class="row">
+        <input id="password" type="password" autocomplete="current-password" placeholder="Password" required />
+        <button id="submit" type="submit">Connect</button>
+      </div>
+      <div id="error"></div>
+    </form>
+  </div>
+
+  <div id="app">
+    <div id="status">Connecting...</div>
+    <div id="terminal"></div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
   <script>
-    const term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
-    const fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(document.getElementById('terminal'));
-    fitAddon.fit();
-
+    const app = document.getElementById('app');
+    const login = document.getElementById('login');
+    const form = document.getElementById('login-form');
+    const passwordInput = document.getElementById('password');
+    const submitBtn = document.getElementById('submit');
+    const errorEl = document.getElementById('error');
     const status = document.getElementById('status');
-    const token = new URLSearchParams(window.location.search).get('token') || '';
-    const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`;
 
     let ws;
     let retries = 0;
+    let term;
+    let fitAddon;
 
     function connect() {
+      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
       ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
@@ -68,20 +126,60 @@
       ws.onerror = () => ws.close();
     }
 
-    term.onData((data) => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(data));
-      }
-    });
-
-    window.addEventListener('resize', () => {
+    function initTerminal() {
+      term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
+      fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(document.getElementById('terminal'));
       fitAddon.fit();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
-    });
 
-    connect();
+      term.onData((data) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(data));
+        }
+      });
+
+      window.addEventListener('resize', () => {
+        fitAddon.fit();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      });
+    }
+
+    async function authorize(candidate) {
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: candidate })
+      });
+      return res.ok;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const candidate = passwordInput.value;
+      errorEl.textContent = '';
+      submitBtn.disabled = true;
+
+      try {
+        const ok = await authorize(candidate);
+        if (!ok) {
+          errorEl.textContent = 'Invalid password';
+          submitBtn.disabled = false;
+          return;
+        }
+      } catch {
+        errorEl.textContent = 'Cannot reach server';
+        submitBtn.disabled = false;
+        return;
+      }
+
+      login.style.display = 'none';
+      app.style.display = 'flex';
+      initTerminal();
+      connect();
+    });
   </script>
 </body>
 </html>

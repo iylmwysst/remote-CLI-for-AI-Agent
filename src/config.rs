@@ -18,6 +18,10 @@ pub struct Config {
     /// Scrollback buffer size in bytes
     #[arg(long, default_value_t = 10240)]
     pub scrollback: usize,
+
+    /// Create a public URL with zrok (requires `zrok` installed and enabled)
+    #[arg(short = 'z', long)]
+    pub zrok: bool,
 }
 
 impl Config {
@@ -74,5 +78,17 @@ mod tests {
     fn test_shell_default_falls_back() {
         let cfg = Config::parse_from(["rust-webtty"]);
         assert!(!cfg.shell_path().is_empty());
+    }
+
+    #[test]
+    fn test_zrok_flag_long() {
+        let cfg = Config::parse_from(["rust-webtty", "--zrok"]);
+        assert!(cfg.zrok);
+    }
+
+    #[test]
+    fn test_zrok_flag_short() {
+        let cfg = Config::parse_from(["rust-webtty", "-z"]);
+        assert!(cfg.zrok);
     }
 }

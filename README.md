@@ -14,6 +14,7 @@ Browser ←── WebSocket ──→ rust-webtty ←──→ $SHELL (PTY)
 - **Single binary** — no runtime dependencies, embeds the web UI inside
 - **Shared session** — all browser tabs see the same terminal (like tmux over the web)
 - **Auto-generated token** — no need to set a password manually
+- **Login screen** — enter password on first page before terminal opens
 - **Scrollback replay** — reconnecting clients see previous output
 - **PTY resize** — terminal resizes when you resize the browser window
 - **Cross-platform** — macOS, Linux, Windows (ConPTY)
@@ -36,8 +37,8 @@ Output:
 ```
   rust-webtty
   ─────────────────────────────────
-  Token  : aX9kRm7q
-  Open   : http://localhost:8080/?token=aX9kRm7q
+  Token  : A1b2C3d4E5f6G7h8
+  Open   : http://localhost:8080
   ─────────────────────────────────
 ```
 
@@ -53,8 +54,19 @@ Options:
   --password <PASSWORD>  Set a fixed token (auto-generated if omitted)
   --shell <PATH>         Shell to spawn [default: $SHELL]
   --scrollback <BYTES>   Scrollback buffer size [default: 10240]
+  -z, --zrok             Create a public zrok URL (requires zrok installed/enabled)
   -h, --help             Print help
 ```
+
+### Public URL with zrok
+
+```bash
+rust-webtty --zrok
+# or
+rust-webtty -zrok
+```
+
+This starts `zrok share public <port>` automatically and keeps terminal auth in the login page.
 
 ### Access from another device
 
@@ -66,7 +78,7 @@ ngrok http 8080
 
 # With Tailscale — just use your Tailscale IP
 rust-webtty --port 8080
-# open http://<tailscale-ip>:8080/?token=<your-token>
+# open http://<tailscale-ip>:8080 then enter password
 ```
 
 ## Build from source
