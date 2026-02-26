@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::sync::Arc;
 
+use portable_pty::PtySize;
+
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     extract::ws::{Message, WebSocket},
@@ -85,8 +87,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                             if msg["type"] == "resize" {
                                 let cols = msg["cols"].as_u64().unwrap_or(80) as u16;
                                 let rows = msg["rows"].as_u64().unwrap_or(24) as u16;
-                                // Resize support: no-op here, wired in Task 7
-                                let _ = (cols, rows);
+                                let mut s = state.session.lock().unwrap();
+                                let _ = s.pty_master.resize(PtySize {
+                                    rows,
+                                    cols,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                });
                             }
                         }
                     }
