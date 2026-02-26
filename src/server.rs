@@ -55,6 +55,7 @@ pub struct LogoutRequest {
 #[derive(Deserialize)]
 pub struct WsQuery {
     terminal_id: Option<String>,
+    skip_scrollback: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -404,7 +405,7 @@ async fn auth_login(
     if *state.access_locked.lock().unwrap() {
         return (
             StatusCode::LOCKED,
-            "Access is locked. Restart rust-webtty to enable login again.",
+            "Access is locked. Restart CodeWebway to enable login again.",
         )
             .into_response();
     }
@@ -431,7 +432,7 @@ async fn auth_login(
         let mut sessions = state.sessions.lock().unwrap();
         let session_token = sessions.create(now);
         let set_cookie = format!(
-            "webtty_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800",
+            "codewebway_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800",
             session_token
         );
         return (StatusCode::OK, [(header::SET_COOKIE, set_cookie)], "OK").into_response();
@@ -485,7 +486,7 @@ async fn auth_logout(
         StatusCode::OK,
         [(
             header::SET_COOKIE,
-            "webtty_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0".to_string(),
+            "codewebway_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0".to_string(),
         )],
         "OK",
     )
@@ -818,7 +819,16 @@ async fn ws_handler(
         return (StatusCode::NOT_FOUND, "Terminal not found").into_response();
     };
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_token, terminal_session))
+    let skip_scrollback = query.skip_scrollback.unwrap_or(false);
+    ws.on_upgrade(move |socket| {
+        handle_socket(
+            socket,
+            state,
+            session_token,
+            terminal_session,
+            skip_scrollback,
+        )
+    })
 }
 
 async fn handle_socket(
@@ -826,12 +836,13 @@ async fn handle_socket(
     state: Arc<AppState>,
     session_token: String,
     terminal: Session,
+    skip_scrollback: bool,
 ) {
     let (scrollback, mut rx) = {
         let s = terminal.lock().unwrap();
         (s.scrollback.snapshot(), s.tx.subscribe())
     };
-    if !scrollback.is_empty() {
+    if !skip_scrollback && !scrollback.is_empty() {
         count_tx(&state, scrollback.len() as u64);
         let _ = socket.send(Message::Binary(scrollback.into())).await;
     }
@@ -921,7 +932,7 @@ fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
         Some(value) => value,
         None => return None,
     };
-    cookie_value(raw_cookie, "webtty_session").map(|value| value.to_string())
+    cookie_value(raw_cookie, "codewebway_session").map(|value| value.to_string())
 }
 
 fn is_session_token_valid(state: &Arc<AppState>, session: &str) -> bool {
@@ -1078,13 +1089,16 @@ mod tests {
 
     #[test]
     fn test_cookie_value_found() {
-        let value = cookie_value("foo=1; webtty_session=abc123; bar=2", "webtty_session");
+        let value = cookie_value(
+            "foo=1; codewebway_session=abc123; bar=2",
+            "codewebway_session",
+        );
         assert_eq!(value, Some("abc123"));
     }
 
     #[test]
     fn test_cookie_value_missing() {
-        let value = cookie_value("foo=1; bar=2", "webtty_session");
+        let value = cookie_value("foo=1; bar=2", "codewebway_session");
         assert_eq!(value, None);
     }
 
@@ -1138,7 +1152,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            "foo=1; webtty_session=abc123".parse().unwrap(),
+            "foo=1; codewebway_session=abc123".parse().unwrap(),
         );
         assert_eq!(
             session_token_from_headers(&headers),

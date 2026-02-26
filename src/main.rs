@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     let url = format!("http://localhost:{}", cfg.port);
 
     println!();
-    println!("  rust-webtty  ");
+    println!("  CodeWebway  ");
     println!("  ─────────────────────────────────");
     println!("  Token  : {}", token);
     println!("  PIN    : configured (hidden)");

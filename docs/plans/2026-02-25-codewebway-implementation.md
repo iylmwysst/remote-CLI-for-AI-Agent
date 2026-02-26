@@ -1,4 +1,4 @@
-# rust-webtty Implementation Plan
+# codewebway Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -25,12 +25,12 @@
 
 ```toml
 [package]
-name = "rust-webtty"
+name = "codewebway"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "rust-webtty"
+name = "codewebway"
 path = "src/main.rs"
 
 [dependencies]
@@ -63,7 +63,7 @@ mod assets;
 
 #[tokio::main]
 async fn main() {
-    println!("rust-webtty stub");
+    println!("codewebway stub");
 }
 ```
 
@@ -74,7 +74,7 @@ async fn main() {
 **Step 3: Verify it compiles**
 
 ```bash
-cd /Users/Lab/rust-webtty
+cd /Users/Lab/codewebway
 cargo build 2>&1 | tail -5
 ```
 Expected: `Finished dev [unoptimized + debuginfo] target(s)`
@@ -101,7 +101,7 @@ Add to `src/config.rs`:
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rust-webtty", about = "Browser-accessible terminal over WebSocket")]
+#[command(name = "codewebway", about = "Browser-accessible terminal over WebSocket")]
 pub struct Config {
     /// Port to listen on
     #[arg(long, default_value_t = 8080)]
@@ -142,31 +142,31 @@ mod tests {
 
     #[test]
     fn test_default_port() {
-        let cfg = Config::parse_from(["rust-webtty", "--password", "secret"]);
+        let cfg = Config::parse_from(["codewebway", "--password", "secret"]);
         assert_eq!(cfg.port, 8080);
     }
 
     #[test]
     fn test_custom_port() {
-        let cfg = Config::parse_from(["rust-webtty", "--password", "secret", "--port", "9090"]);
+        let cfg = Config::parse_from(["codewebway", "--password", "secret", "--port", "9090"]);
         assert_eq!(cfg.port, 9090);
     }
 
     #[test]
     fn test_password_stored() {
-        let cfg = Config::parse_from(["rust-webtty", "--password", "mysecret"]);
+        let cfg = Config::parse_from(["codewebway", "--password", "mysecret"]);
         assert_eq!(cfg.password, "mysecret");
     }
 
     #[test]
     fn test_shell_override() {
-        let cfg = Config::parse_from(["rust-webtty", "--password", "x", "--shell", "/bin/bash"]);
+        let cfg = Config::parse_from(["codewebway", "--password", "x", "--shell", "/bin/bash"]);
         assert_eq!(cfg.shell_path(), "/bin/bash");
     }
 
     #[test]
     fn test_shell_default_falls_back() {
-        let cfg = Config::parse_from(["rust-webtty", "--password", "x"]);
+        let cfg = Config::parse_from(["codewebway", "--password", "x"]);
         // just verify it returns something non-empty
         assert!(!cfg.shell_path().is_empty());
     }
@@ -421,7 +421,7 @@ pub struct Assets;
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>rust-webtty</title>
+  <title>codewebway</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -744,7 +744,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = server::router(state);
     let addr = format!("0.0.0.0:{}", cfg.port);
-    println!("rust-webtty listening on http://{}", addr);
+    println!("codewebway listening on http://{}", addr);
     println!("Connect: http://{}/?token={}", addr, cfg.password);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -846,7 +846,7 @@ git commit -m "feat: implement PTY resize on browser window resize"
 
 ```bash
 cargo build --release 2>&1 | tail -5
-ls -lh target/release/rust-webtty
+ls -lh target/release/codewebway
 ```
 Expected: binary under 10 MB
 
@@ -860,7 +860,7 @@ Expected: all tests PASS, zero failures
 **Step 3: Final smoke test**
 
 ```bash
-./target/release/rust-webtty --password hello123
+./target/release/codewebway --password hello123
 # open http://localhost:8080/?token=hello123
 # verify: terminal renders, typing works, resize works
 ```

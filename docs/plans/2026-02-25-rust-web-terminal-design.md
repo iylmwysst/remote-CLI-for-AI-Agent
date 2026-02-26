@@ -26,7 +26,7 @@ and rely on external network tunnels (Tailscale, ngrok) for exposure — not imp
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  rust-webtty binary                 │
+│                  codewebway binary                 │
 │                                                     │
 │  ┌─────────────┐     ┌──────────────────────────┐  │
 │  │  axum HTTP  │     │     PTY Manager           │  │
@@ -75,7 +75,7 @@ and rely on external network tunnels (Tailscale, ngrok) for exposure — not imp
 ## Configuration
 
 ```
-rust-webtty [OPTIONS]
+codewebway [OPTIONS]
 
 Options:
   --port <PORT>          Listen port (default: 8080)
@@ -108,7 +108,7 @@ Missing `--password` → binary exits immediately with a clear error message.
 ## Project Structure
 
 ```
-rust-webtty/
+codewebway/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          # CLI parsing, startup

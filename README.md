@@ -1,11 +1,11 @@
-# rust-webtty
+# CodeWebway
 
 A lightweight web terminal written in Rust. Run it on any machine and access your shell from any browser — no remote desktop, no VNC, no heavy software required.
 
 ## How it works
 
 ```
-Browser ←── WebSocket ──→ rust-webtty ←──→ $SHELL (PTY)
+Browser ←── WebSocket ──→ CodeWebway ←──→ $SHELL (PTY)
                                 ↕
                        broadcast channel
                     (shared across all tabs)
@@ -33,18 +33,18 @@ Browser ←── WebSocket ──→ rust-webtty ←──→ $SHELL (PTY)
 ### Install (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iylmwysst/remote-CLI-for-AI-Agent/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iylmwysst/CodeWebway/main/install.sh | sh
 ```
 
 ### Run
 
 ```bash
-rust-webtty -z
+codewebway -z
 ```
 
 Output:
 ```
-  rust-webtty
+  CodeWebway
   ─────────────────────────────────
   Token  : A1b2C3d4E5f6G7h8
   Open   : http://localhost:8080
@@ -56,7 +56,7 @@ Open the URL in your browser — done.
 ## Usage
 
 ```
-rust-webtty [OPTIONS]
+codewebway [OPTIONS]
 
 Options:
   --host <HOST>          Listen host [default: 127.0.0.1]
@@ -65,7 +65,7 @@ Options:
   --pin <PIN>            Set secondary login PIN (if omitted, interactive hidden prompt)
   --shell <PATH>         Shell to spawn [default: $SHELL]
   --cwd <PATH>           Working directory for shell [default: current directory]
-  --scrollback <BYTES>   Scrollback buffer size [default: 10240]
+  --scrollback <BYTES>   Scrollback buffer size [default: 131072]
   -z, --zrok             Create a public zrok URL (requires zrok installed/enabled)
   -h, --help             Print help
 ```
@@ -73,9 +73,9 @@ Options:
 ### Public URL with zrok
 
 ```bash
-rust-webtty -z
+codewebway -z
 # or
-rust-webtty --zrok
+codewebway --zrok
 ```
 
 This starts `zrok share public <port>` automatically and keeps terminal auth in the login page.
@@ -89,7 +89,7 @@ Pair with [Tailscale](https://tailscale.com) or [ngrok](https://ngrok.com) to ex
 ngrok http 8080
 
 # With Tailscale — just use your Tailscale IP
-rust-webtty --port 8080
+codewebway --port 8080
 # open http://<tailscale-ip>:8080 then enter password
 ```
 
@@ -98,10 +98,10 @@ rust-webtty --port 8080
 Requires [Rust](https://rustup.rs) 1.75+.
 
 ```bash
-git clone https://github.com/iylmwysst/remote-CLI-for-AI-Agent
-cd remote-CLI-for-AI-Agent
+git clone https://github.com/iylmwysst/CodeWebway
+cd CodeWebway
 cargo build --release
-./target/release/rust-webtty
+./target/release/codewebway
 ```
 
 ## Tech stack

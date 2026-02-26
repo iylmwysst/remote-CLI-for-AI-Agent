@@ -1,10 +1,7 @@
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
-#[command(
-    name = "rust-webtty",
-    about = "Browser-accessible terminal over WebSocket"
-)]
+#[command(name = "codewebway", about = "CodeWebway terminal over WebSocket")]
 pub struct Config {
     /// Host/IP to bind (default: localhost only)
     #[arg(long, default_value = "127.0.0.1")]
@@ -31,7 +28,7 @@ pub struct Config {
     pub cwd: Option<String>,
 
     /// Scrollback buffer size in bytes
-    #[arg(long, default_value_t = 10240)]
+    #[arg(long, default_value_t = 131072)]
     pub scrollback: usize,
 
     /// Create a public URL with zrok (requires `zrok` installed and enabled)
@@ -61,79 +58,79 @@ mod tests {
 
     #[test]
     fn test_default_port() {
-        let cfg = Config::parse_from(["rust-webtty"]);
+        let cfg = Config::parse_from(["codewebway"]);
         assert_eq!(cfg.port, 8080);
     }
 
     #[test]
     fn test_default_host() {
-        let cfg = Config::parse_from(["rust-webtty"]);
+        let cfg = Config::parse_from(["codewebway"]);
         assert_eq!(cfg.host, "127.0.0.1");
     }
 
     #[test]
     fn test_custom_host() {
-        let cfg = Config::parse_from(["rust-webtty", "--host", "0.0.0.0"]);
+        let cfg = Config::parse_from(["codewebway", "--host", "0.0.0.0"]);
         assert_eq!(cfg.host, "0.0.0.0");
     }
 
     #[test]
     fn test_custom_port() {
-        let cfg = Config::parse_from(["rust-webtty", "--port", "9090"]);
+        let cfg = Config::parse_from(["codewebway", "--port", "9090"]);
         assert_eq!(cfg.port, 9090);
     }
 
     #[test]
     fn test_password_stored() {
-        let cfg = Config::parse_from(["rust-webtty", "--password", "mysecret"]);
+        let cfg = Config::parse_from(["codewebway", "--password", "mysecret"]);
         assert_eq!(cfg.password, Some("mysecret".to_string()));
     }
 
     #[test]
     fn test_password_optional() {
-        let cfg = Config::parse_from(["rust-webtty"]);
+        let cfg = Config::parse_from(["codewebway"]);
         assert!(cfg.password.is_none());
     }
 
     #[test]
     fn test_pin_optional() {
-        let cfg = Config::parse_from(["rust-webtty"]);
+        let cfg = Config::parse_from(["codewebway"]);
         assert!(cfg.pin.is_none());
     }
 
     #[test]
     fn test_pin_stored() {
-        let cfg = Config::parse_from(["rust-webtty", "--pin", "123456"]);
+        let cfg = Config::parse_from(["codewebway", "--pin", "123456"]);
         assert_eq!(cfg.pin, Some("123456".to_string()));
     }
 
     #[test]
     fn test_shell_override() {
-        let cfg = Config::parse_from(["rust-webtty", "--shell", "/bin/bash"]);
+        let cfg = Config::parse_from(["codewebway", "--shell", "/bin/bash"]);
         assert_eq!(cfg.shell_path(), "/bin/bash");
     }
 
     #[test]
     fn test_cwd_stored() {
-        let cfg = Config::parse_from(["rust-webtty", "--cwd", "/tmp"]);
+        let cfg = Config::parse_from(["codewebway", "--cwd", "/tmp"]);
         assert_eq!(cfg.cwd, Some("/tmp".to_string()));
     }
 
     #[test]
     fn test_shell_default_falls_back() {
-        let cfg = Config::parse_from(["rust-webtty"]);
+        let cfg = Config::parse_from(["codewebway"]);
         assert!(!cfg.shell_path().is_empty());
     }
 
     #[test]
     fn test_zrok_flag_long() {
-        let cfg = Config::parse_from(["rust-webtty", "--zrok"]);
+        let cfg = Config::parse_from(["codewebway", "--zrok"]);
         assert!(cfg.zrok);
     }
 
     #[test]
     fn test_zrok_flag_short() {
-        let cfg = Config::parse_from(["rust-webtty", "-z"]);
+        let cfg = Config::parse_from(["codewebway", "-z"]);
         assert!(cfg.zrok);
     }
 }

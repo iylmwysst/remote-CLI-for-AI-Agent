@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-REPO="iylmwysst/remote-CLI-for-AI-Agent"
-BIN="rust-webtty"
+REPO="iylmwysst/CodeWebway"
+BIN="codewebway"
 INSTALL_DIR="${HOME}/.local/bin"
 
 # Detect OS and arch

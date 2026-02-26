@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>rust-webtty</title>
+  <title>CodeWebway</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -205,7 +205,7 @@
 <body>
   <div id="login">
     <form class="card" id="login-form">
-      <h1>rust-webtty</h1>
+      <h1>CodeWebway</h1>
       <p>Enter password and PIN to open workspace</p>
       <div class="stack">
         <input id="password" type="password" autocomplete="current-password" placeholder="Password" required />
@@ -302,6 +302,10 @@
     const FILE_WARN_BYTES = 128 * 1024;
     const FILE_EDIT_LIMIT_BYTES = 512 * 1024;
     const CACHE_PREFIX = 'rwtty:file:';
+    const TERM_CACHE_PREFIX = 'cw:term:';
+    const TERM_CACHE_MAX_CHARS = 500000;
+    const terminalCache = new Map();
+    const textDecoder = new TextDecoder();
 
     function setStatus(text, color) {
       statusEl.textContent = text;
@@ -332,6 +336,45 @@
 
     function cacheKey(path) {
       return `${CACHE_PREFIX}${path}`;
+    }
+
+    function termCacheKey(terminalId) {
+      return `${TERM_CACHE_PREFIX}${terminalId}`;
+    }
+
+    function trimTerminalCache(text) {
+      if (!text || text.length <= TERM_CACHE_MAX_CHARS) return text || '';
+      return text.slice(text.length - TERM_CACHE_MAX_CHARS);
+    }
+
+    function readTerminalCache(terminalId) {
+      if (terminalCache.has(terminalId)) {
+        return terminalCache.get(terminalId) || '';
+      }
+      try {
+        const raw = localStorage.getItem(termCacheKey(terminalId)) || '';
+        const trimmed = trimTerminalCache(raw);
+        terminalCache.set(terminalId, trimmed);
+        return trimmed;
+      } catch {
+        terminalCache.set(terminalId, '');
+        return '';
+      }
+    }
+
+    function writeTerminalCache(terminalId, text) {
+      const trimmed = trimTerminalCache(text);
+      terminalCache.set(terminalId, trimmed);
+      try {
+        localStorage.setItem(termCacheKey(terminalId), trimmed);
+      } catch {
+        // ignore local cache failures
+      }
+    }
+
+    function appendTerminalCache(terminalId, chunk) {
+      if (!chunk) return;
+      writeTerminalCache(terminalId, `${readTerminalCache(terminalId)}${chunk}`);
     }
 
     function readFileCache(path, expectedSize) {
@@ -445,15 +488,24 @@
       ws = null;
     }
 
-    function connectTerminal(terminalId) {
+    function connectTerminal(terminalId, options = {}) {
+      const switchingTerminal = terminalId !== activeTerminalId;
       activeTerminalId = terminalId;
       renderTerminalTabs();
-      if (term) {
+      if (term && switchingTerminal) {
         term.clear();
+      }
+      if (term && switchingTerminal) {
+        const cached = readTerminalCache(terminalId);
+        if (cached) {
+          term.write(cached);
+        }
       }
       closeSocket();
 
-      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?terminal_id=${encodeURIComponent(terminalId)}`;
+      const hasCached = readTerminalCache(terminalId).length > 0;
+      const shouldSkipScrollback = options.skipScrollback || hasCached;
+      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?terminal_id=${encodeURIComponent(terminalId)}&skip_scrollback=${shouldSkipScrollback ? '1' : '0'}`;
       const connectionId = ++wsConnectionId;
       ws = new WebSocket(wsUrl);
       const localWs = ws;
@@ -476,7 +528,10 @@
             showLogin('Session expired. Please login again.');
           }
         } else {
-          term.write(new Uint8Array(e.data));
+          const bytes = new Uint8Array(e.data);
+          const chunkText = textDecoder.decode(bytes);
+          appendTerminalCache(terminalId, chunkText);
+          term.write(bytes);
         }
       };
 
@@ -505,7 +560,7 @@
         if (retries < 4) {
           retries++;
           setStatus(`Reconnecting (${retries})...`, '#ff9800');
-          setTimeout(() => connectTerminal(terminalId), 600 * retries);
+          setTimeout(() => connectTerminal(terminalId, { skipScrollback: true }), 600 * retries);
         } else {
           setStatus('Disconnected', '#ff9800');
         }
@@ -571,6 +626,12 @@
         alert('Cannot close terminal');
         return;
       }
+      try {
+        localStorage.removeItem(termCacheKey(id));
+      } catch {
+        // ignore local cache failures
+      }
+      terminalCache.delete(id);
       terminals = terminals.filter((t) => t.id !== id);
       if (activeTerminalId === id) {
         if (terminals.length === 0) {
@@ -848,7 +909,7 @@
         const res = await authorize(password, pin);
         if (!res.ok) {
           if (res.status === 423) {
-            errorEl.textContent = 'Access locked. Restart rust-webtty to login again.';
+            errorEl.textContent = 'Access locked. Restart CodeWebway to login again.';
           } else if (res.status === 429) {
             errorEl.textContent = 'Too many attempts. Try again later.';
           } else {
@@ -986,11 +1047,19 @@
       );
       loggingOut = true;
       logoutNotice = lockSystem
-        ? 'Logged out and locked access. Restart rust-webtty to login again.'
+        ? 'Logged out and locked access. Restart CodeWebway to login again.'
         : 'Logged out.';
 
       await logout(lockSystem);
       closeSocket();
+      terminals.forEach((t) => {
+        try {
+          localStorage.removeItem(termCacheKey(t.id));
+        } catch {
+          // ignore local cache failures
+        }
+      });
+      terminalCache.clear();
       showLogin(logoutNotice);
       loggingOut = false;
       logoutNotice = '';
