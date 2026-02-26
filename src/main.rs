@@ -121,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  Bind   : {}", addr);
     println!("  Dir    : {}", working_dir.display());
     println!("  Login  : use this Token + your PIN on the web login page");
+    println!("  Stop   : press q + Enter (or Ctrl+C)");
     println!("  ─────────────────────────────────");
     println!();
 
@@ -131,10 +132,40 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    if io::stdin().is_terminal() {
+        let tx = shutdown_tx.clone();
+        std::thread::spawn(move || {
+            let stdin = io::stdin();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdin.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let cmd = line.trim().to_ascii_lowercase();
+                        match cmd.as_str() {
+                            "q" | "quit" | "exit" | "stop" => {
+                                let _ = tx.send(());
+                                break;
+                            }
+                            "" => {}
+                            _ => eprintln!("Type 'q' then Enter to stop."),
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = shutdown_rx.recv() => {},
+            }
         })
         .await?;
 
