@@ -615,8 +615,7 @@
       }
       closeSocket();
 
-      const hasCached = readTerminalCache(terminalId).length > 0;
-      const shouldSkipScrollback = options.skipScrollback || hasCached;
+      const shouldSkipScrollback = options.skipScrollback === true;
       const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?terminal_id=${encodeURIComponent(terminalId)}&skip_scrollback=${shouldSkipScrollback ? 'true' : 'false'}`;
       const connectionId = ++wsConnectionId;
       ws = new WebSocket(wsUrl);
@@ -672,7 +671,7 @@
         if (retries < 4) {
           retries++;
           setStatus(`Reconnecting (${retries})...`, '#ff9800');
-          setTimeout(() => connectTerminal(terminalId, { skipScrollback: true }), 600 * retries);
+          setTimeout(() => connectTerminal(terminalId, { skipScrollback: false }), 600 * retries);
         } else {
           setStatus('Disconnected', '#ff9800');
         }
