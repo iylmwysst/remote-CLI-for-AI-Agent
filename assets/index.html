@@ -505,7 +505,7 @@
 
       const hasCached = readTerminalCache(terminalId).length > 0;
       const shouldSkipScrollback = options.skipScrollback || hasCached;
-      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?terminal_id=${encodeURIComponent(terminalId)}&skip_scrollback=${shouldSkipScrollback ? '1' : '0'}`;
+      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?terminal_id=${encodeURIComponent(terminalId)}&skip_scrollback=${shouldSkipScrollback ? 'true' : 'false'}`;
       const connectionId = ++wsConnectionId;
       ws = new WebSocket(wsUrl);
       const localWs = ws;

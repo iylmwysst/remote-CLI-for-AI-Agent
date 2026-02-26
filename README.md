@@ -1,6 +1,15 @@
-# CodeWebway
+```text
+  ____          _     __        __   _
+ / ___|___   __| | ___\ \      / /__| |____      ____ _ _   _
+| |   / _ \ / _` |/ _ \\ \ /\ / / _ \ '_ \ \ /\ / / _` | | | |
+| |__| (_) | (_| |  __/ \ V  V /  __/ |_) \ V  V / (_| | |_| |
+ \____\___/ \__,_|\___|  \_/\_/ \___|_.__/ \_/\_/ \__,_|\__, |
+                                                        |___/
+```
 
 A lightweight web terminal written in Rust. Run it on any machine and access your shell from any browser — no remote desktop, no VNC, no heavy software required.
+
+**Powered by Rust**
 
 ## How it works
 

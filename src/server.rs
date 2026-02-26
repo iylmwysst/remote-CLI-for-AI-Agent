@@ -55,7 +55,7 @@ pub struct LogoutRequest {
 #[derive(Deserialize)]
 pub struct WsQuery {
     terminal_id: Option<String>,
-    skip_scrollback: Option<bool>,
+    skip_scrollback: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -819,7 +819,7 @@ async fn ws_handler(
         return (StatusCode::NOT_FOUND, "Terminal not found").into_response();
     };
 
-    let skip_scrollback = query.skip_scrollback.unwrap_or(false);
+    let skip_scrollback = parse_query_bool(query.skip_scrollback.as_deref());
     ws.on_upgrade(move |socket| {
         handle_socket(
             socket,
@@ -951,6 +951,16 @@ fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn parse_query_bool(value: Option<&str>) -> bool {
+    let Some(raw) = value else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn client_key_from_headers(headers: &HeaderMap) -> String {
