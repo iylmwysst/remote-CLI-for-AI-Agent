@@ -5,7 +5,7 @@ mod session;
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{io, io::IsTerminal};
 
@@ -16,7 +16,9 @@ use rand::distributions::Alphanumeric;
 use rand::Rng;
 use server::AppState;
 use server::FailedLoginTracker;
+use server::TempLinkScope;
 use server::TerminalManager;
+use tokio::sync::mpsc;
 
 fn generate_token(len: usize) -> String {
     rand::thread_rng()
@@ -26,8 +28,23 @@ fn generate_token(len: usize) -> String {
         .collect()
 }
 
+fn validate_pin(pin: &str) -> anyhow::Result<()> {
+    if pin.len() < 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+        anyhow::bail!("PIN must be at least 6 digits.");
+    }
+    Ok(())
+}
+
+fn validate_token(token: &str) -> anyhow::Result<()> {
+    if token.chars().count() < 16 {
+        anyhow::bail!("Token is too short. Use at least 16 characters (~80+ bits).");
+    }
+    Ok(())
+}
+
 fn resolve_pin(config_pin: Option<String>) -> anyhow::Result<String> {
     if let Some(pin) = config_pin {
+        validate_pin(&pin)?;
         return Ok(pin);
     }
     if !io::stdin().is_terminal() {
@@ -35,9 +52,7 @@ fn resolve_pin(config_pin: Option<String>) -> anyhow::Result<String> {
     }
 
     let pin = rpassword::prompt_password("Set PIN (required): ")?;
-    if pin.trim().is_empty() {
-        anyhow::bail!("PIN cannot be empty.");
-    }
+    validate_pin(&pin)?;
     let confirm = rpassword::prompt_password("Confirm PIN: ")?;
     if pin != confirm {
         anyhow::bail!("PIN confirmation does not match.");
@@ -78,13 +93,14 @@ fn resolve_working_dir(config_cwd: Option<String>) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn stop_zrok_child(child: &mut Option<Child>) {
+fn stop_zrok_child(child: &mut Option<Child>, reason: &str) -> bool {
     let Some(mut process) = child.take() else {
-        return;
+        return false;
     };
     let _ = process.kill();
     let _ = process.wait();
-    eprintln!("  zrok   : stopped");
+    eprintln!("  zrok   : {reason}");
+    true
 }
 
 #[tokio::main]
@@ -94,20 +110,38 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::parse_from(normalized_args());
 
     let token = cfg.password.clone().unwrap_or_else(|| generate_token(16));
+    validate_token(&token)?;
     let pin = resolve_pin(cfg.pin.clone())?;
     let working_dir = resolve_working_dir(cfg.cwd.clone())?;
+
+    let idle_timeout = Duration::from_secs(30 * 60);
+    let absolute_timeout = Duration::from_secs(12 * 60 * 60);
+    let shutdown_grace = Duration::from_secs(3 * 60 * 60);
+    let warning_window = Duration::from_secs(2 * 60);
+    let now = std::time::Instant::now();
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<()>();
 
     let state = AppState {
         password: token.clone(),
         pin: Some(pin),
         failed_logins: Mutex::new(FailedLoginTracker::new(3, Duration::from_secs(300))),
-        sessions: Mutex::new(server::SessionStore::new(Duration::from_secs(1800))),
+        sessions: Mutex::new(server::SessionStore::new(idle_timeout, absolute_timeout)),
         access_locked: Mutex::new(false),
         terminals: Mutex::new(TerminalManager::new(8)),
         default_shell: cfg.shell_path(),
         root_dir: working_dir.clone(),
         scrollback: cfg.scrollback,
         usage: Mutex::new(server::UsageTracker::new()),
+        ws_connections: Mutex::new(0),
+        max_ws_connections: cfg.max_connections,
+        idle_timeout,
+        shutdown_grace,
+        warning_window,
+        shutdown_deadline: Mutex::new(now + shutdown_grace),
+        shutdown_tx: shutdown_tx.clone(),
+        temp_links: Mutex::new(server::TempLinkStore::new()),
+        temp_grants: Mutex::new(std::collections::HashMap::new()),
+        temp_link_signing_key: generate_token(48),
     };
 
     state.terminals.lock().unwrap().create(
@@ -117,7 +151,8 @@ async fn main() -> anyhow::Result<()> {
         cfg.scrollback,
     )?;
 
-    let app = server::router(state);
+    let state = Arc::new(state);
+    let app = server::router(Arc::clone(&state));
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let url = format!("http://localhost:{}", cfg.port);
 
@@ -134,14 +169,60 @@ async fn main() -> anyhow::Result<()> {
     println!("  ─────────────────────────────────");
     println!();
 
-    let mut zrok_child = if cfg.zrok {
+    if cfg.temp_link {
+        let scope =
+            TempLinkScope::from_input(&cfg.temp_link_scope).unwrap_or(TempLinkScope::ReadOnly);
+        match server::create_temp_link_for_host(
+            &state,
+            cfg.temp_link_ttl_minutes,
+            scope,
+            cfg.temp_link_max_uses,
+            None,
+        ) {
+            Ok(link) => {
+                println!("  TempLink : {}{}", url, link.url);
+                println!(
+                    "  TempInfo : ttl={}m scope={} uses={}",
+                    cfg.temp_link_ttl_minutes, cfg.temp_link_scope, cfg.temp_link_max_uses
+                );
+                println!(
+                    "             grace={}s after expiry for clock skew/network delay",
+                    120
+                );
+                println!();
+            }
+            Err(err) => {
+                eprintln!("  TempLink : failed to create ({err})");
+            }
+        }
+    }
+
+    let zrok_child = if cfg.zrok {
         println!("  zrok   : starting public share on port {}", cfg.port);
+        println!("  WARNING: Public mode exposes this host to the internet.");
+        println!("           Keep Token + PIN secret and stop when not needed.");
         Some(spawn_zrok(cfg.port)?)
     } else {
         None
     };
+    let zrok_child = Arc::new(Mutex::new(zrok_child));
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    if cfg.zrok {
+        if let Some(minutes) = cfg.public_timeout_minutes {
+            println!("  Public : auto-disable after {} minute(s)", minutes);
+            let zrok_child_ref = Arc::clone(&zrok_child);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(minutes.saturating_mul(60)));
+                let mut child = zrok_child_ref.lock().unwrap();
+                let _ = stop_zrok_child(&mut child, "public share auto-disabled");
+            });
+        } else {
+            println!("  Tip    : set --public-timeout-minutes <N> to auto-disable public mode.");
+        }
+    } else if cfg.public_timeout_minutes.is_some() {
+        println!("  Note   : --public-timeout-minutes is ignored without --zrok.");
+    }
+
     if io::stdin().is_terminal() {
         let tx = shutdown_tx.clone();
         std::thread::spawn(move || {
@@ -190,6 +271,22 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    {
+        let tx = shutdown_tx.clone();
+        let state_ref = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                if server::shutdown_remaining_secs(&state_ref, std::time::Instant::now()) == 0 {
+                    eprintln!("Auto-shutdown: no authenticated activity in grace window.");
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -197,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
 
-    stop_zrok_child(&mut zrok_child);
+    let mut child = zrok_child.lock().unwrap();
+    let _ = stop_zrok_child(&mut child, "stopped");
     Ok(())
 }

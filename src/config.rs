@@ -34,6 +34,41 @@ pub struct Config {
     /// Create a public URL with zrok (requires `zrok` installed and enabled)
     #[arg(short = 'z', long)]
     pub zrok: bool,
+
+    /// Auto-disable public zrok share after N minutes (requires --zrok)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub public_timeout_minutes: Option<u64>,
+
+    /// Maximum concurrent WebSocket connections
+    #[arg(long, default_value_t = 8)]
+    pub max_connections: usize,
+
+    /// Generate one temporary link at startup (printed in host console)
+    #[arg(long)]
+    pub temp_link: bool,
+
+    /// Temporary link TTL in minutes (allowed: 5, 15, 60)
+    #[arg(long, default_value_t = 15, value_parser = parse_temp_ttl)]
+    pub temp_link_ttl_minutes: u64,
+
+    /// Temporary link scope: read-only or interactive
+    #[arg(long, default_value = "read-only", value_parser = ["read-only", "interactive"])]
+    pub temp_link_scope: String,
+
+    /// Temporary link max uses (default 1 = one-time)
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub temp_link_max_uses: u32,
+}
+
+fn parse_temp_ttl(raw: &str) -> Result<u64, String> {
+    let value = raw
+        .parse::<u64>()
+        .map_err(|_| "ttl must be a number".to_string())?;
+    if matches!(value, 5 | 15 | 60) {
+        Ok(value)
+    } else {
+        Err("ttl must be one of: 5, 15, 60".to_string())
+    }
 }
 
 impl Config {
@@ -132,5 +167,50 @@ mod tests {
     fn test_zrok_flag_short() {
         let cfg = Config::parse_from(["codewebway", "-z"]);
         assert!(cfg.zrok);
+    }
+
+    #[test]
+    fn test_public_timeout_minutes() {
+        let cfg = Config::parse_from(["codewebway", "--public-timeout-minutes", "15"]);
+        assert_eq!(cfg.public_timeout_minutes, Some(15));
+    }
+
+    #[test]
+    fn test_max_connections_default() {
+        let cfg = Config::parse_from(["codewebway"]);
+        assert_eq!(cfg.max_connections, 8);
+    }
+
+    #[test]
+    fn test_max_connections_custom() {
+        let cfg = Config::parse_from(["codewebway", "--max-connections", "10"]);
+        assert_eq!(cfg.max_connections, 10);
+    }
+
+    #[test]
+    fn test_temp_link_defaults() {
+        let cfg = Config::parse_from(["codewebway"]);
+        assert!(!cfg.temp_link);
+        assert_eq!(cfg.temp_link_ttl_minutes, 15);
+        assert_eq!(cfg.temp_link_scope, "read-only");
+        assert_eq!(cfg.temp_link_max_uses, 1);
+    }
+
+    #[test]
+    fn test_temp_link_custom() {
+        let cfg = Config::parse_from([
+            "codewebway",
+            "--temp-link",
+            "--temp-link-ttl-minutes",
+            "60",
+            "--temp-link-scope",
+            "interactive",
+            "--temp-link-max-uses",
+            "3",
+        ]);
+        assert!(cfg.temp_link);
+        assert_eq!(cfg.temp_link_ttl_minutes, 60);
+        assert_eq!(cfg.temp_link_scope, "interactive");
+        assert_eq!(cfg.temp_link_max_uses, 3);
     }
 }

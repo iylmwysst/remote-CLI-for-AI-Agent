@@ -29,7 +29,7 @@
     .card p { color: #aaa; margin-bottom: 14px; font-size: 14px; }
     .stack { display: flex; flex-direction: column; gap: 10px; }
     .row { display: flex; gap: 8px; }
-    input {
+    input, select {
       width: 100%;
       background: #111;
       border: 1px solid #444;
@@ -51,8 +51,30 @@
     button:disabled { opacity: 0.6; cursor: wait; }
     .ghost { background: #2d2d2d; }
     #error { color: #ff8a80; margin-top: 10px; min-height: 20px; font-size: 13px; }
+    #login-note {
+      color: #f4c36a;
+      margin-top: 8px;
+      min-height: 18px;
+      font-size: 12px;
+    }
 
     #app { display: none; height: 100vh; flex-direction: column; }
+    #session-warning {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: #3a2c12;
+      border-bottom: 1px solid #5b4420;
+      color: #ffd98e;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    #session-warning button {
+      padding: 4px 8px;
+      font-size: 12px;
+      border-radius: 6px;
+    }
     #topbar {
       border-bottom: 1px solid #2f2f2f;
       background: #1b1b1b;
@@ -257,6 +279,61 @@
       gap: 8px;
       justify-content: flex-end;
     }
+    #share-modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 60;
+    }
+    #share-modal.open { display: flex; }
+    #share-form {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    #share-form .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    #share-link-output {
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 12px;
+      color: #9ad1ff;
+      min-height: 18px;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    #temp-links-list {
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid #343434;
+      border-radius: 8px;
+      padding: 6px;
+      display: grid;
+      gap: 6px;
+    }
+    .temp-link-item {
+      border: 1px solid #3b3b3b;
+      border-radius: 8px;
+      padding: 8px;
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: #c9c9c9;
+    }
+    .temp-link-item .meta {
+      color: #9f9f9f;
+      font-size: 11px;
+    }
+    .temp-link-item .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
   </style>
 </head>
 <body>
@@ -272,10 +349,15 @@
         </div>
       </div>
       <div id="error"></div>
+      <div id="login-note"></div>
     </form>
   </div>
 
   <div id="app">
+    <div id="session-warning">
+      <span id="session-warning-text"></span>
+      <button id="stay-signed-in" type="button">Stay signed in</button>
+    </div>
     <div id="topbar">
       <div id="status">Connected</div>
       <div id="topbar-right">
@@ -314,11 +396,44 @@
   <div id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-title">
     <div class="modal-card">
       <h3 id="logout-title">Logout options</h3>
-      <p>Choose whether to logout only, or logout and lock access until server restart.</p>
+      <p>Choose whether to logout only, or lockout and shutdown the server now.</p>
       <div class="modal-actions">
         <button id="logout-cancel" class="ghost" type="button">Cancel</button>
         <button id="logout-only" class="ghost" type="button">Logout only</button>
-        <button id="logout-lock" type="button">Logout + Lock</button>
+        <button id="logout-lock" type="button">Lockout + Shutdown</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="share-modal" role="dialog" aria-modal="true" aria-labelledby="share-title">
+    <div class="modal-card">
+      <h3 id="share-title">Temporary Link</h3>
+      <p>Create short-lived link without sharing your main Token/PIN.</p>
+      <div id="share-form">
+        <div class="row">
+          <select id="temp-ttl">
+            <option value="5">5 min</option>
+            <option value="15" selected>15 min</option>
+            <option value="60">1 hour</option>
+          </select>
+          <select id="temp-scope">
+            <option value="read-only" selected>Read only</option>
+            <option value="interactive">Interactive</option>
+          </select>
+        </div>
+        <div class="row">
+          <label><input id="temp-one-time" type="checkbox" checked> One-time</label>
+          <input id="temp-max-uses" type="number" min="1" max="100" value="5" />
+        </div>
+        <div class="row">
+          <label><input id="temp-bind-terminal" type="checkbox"> Bind active tab</label>
+          <button id="create-temp-link" type="button">Create Temporary Link</button>
+        </div>
+      </div>
+      <div id="share-link-output"></div>
+      <div id="temp-links-list"></div>
+      <div class="modal-actions">
+        <button id="share-close" class="ghost" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -333,8 +448,13 @@
     const pinInput = document.getElementById('pin');
     const submitBtn = document.getElementById('submit');
     const errorEl = document.getElementById('error');
+    const loginNoteEl = document.getElementById('login-note');
     const statusEl = document.getElementById('status');
     const usageEl = document.getElementById('usage');
+    const shareBtn = document.getElementById('share');
+    const sessionWarningEl = document.getElementById('session-warning');
+    const sessionWarningTextEl = document.getElementById('session-warning-text');
+    const staySignedInBtn = document.getElementById('stay-signed-in');
     const logoutBtn = document.getElementById('logout');
     const newTabBtn = document.getElementById('new-tab');
     const termTabs = document.getElementById('term-tabs');
@@ -351,6 +471,16 @@
     const logoutOnlyBtn = document.getElementById('logout-only');
     const logoutLockBtn = document.getElementById('logout-lock');
     const logoutCancelBtn = document.getElementById('logout-cancel');
+    const shareModal = document.getElementById('share-modal');
+    const shareCloseBtn = document.getElementById('share-close');
+    const tempTtlEl = document.getElementById('temp-ttl');
+    const tempScopeEl = document.getElementById('temp-scope');
+    const tempOneTimeEl = document.getElementById('temp-one-time');
+    const tempMaxUsesEl = document.getElementById('temp-max-uses');
+    const tempBindTerminalEl = document.getElementById('temp-bind-terminal');
+    const createTempLinkBtn = document.getElementById('create-temp-link');
+    const shareLinkOutputEl = document.getElementById('share-link-output');
+    const tempLinksListEl = document.getElementById('temp-links-list');
 
     let ws;
     let retries = 0;
@@ -371,6 +501,9 @@
     let editingBaseHash = null;
     let editingOriginal = '';
     let usageTimer = null;
+    let sessionTimer = null;
+    let publicTimer = null;
+    let tempLinksRefreshTimer = null;
     const fileMeta = new Map();
     const FILE_WARN_BYTES = 128 * 1024;
     const FILE_EDIT_LIMIT_BYTES = 512 * 1024;
@@ -379,6 +512,20 @@
     const TERM_CACHE_MAX_CHARS = 500000;
     const terminalCache = new Map();
     const textDecoder = new TextDecoder();
+    let sessionAccess = {
+      readOnly: false,
+      boundTerminalId: null,
+      tempLinkId: null
+    };
+    let tempLinks = [];
+
+    function formatSeconds(total) {
+      const safe = Math.max(0, Math.floor(total || 0));
+      const h = Math.floor(safe / 3600).toString().padStart(2, '0');
+      const m = Math.floor((safe % 3600) / 60).toString().padStart(2, '0');
+      const s = Math.floor(safe % 60).toString().padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    }
 
     function setStatus(text, color) {
       statusEl.textContent = text;
@@ -395,11 +542,29 @@
         (current.size_bytes || current.content.length) <= FILE_EDIT_LIMIT_BYTES
       );
       const editing = Boolean(editingPath);
+      const readOnly = sessionAccess.readOnly === true;
 
-      editFileBtn.disabled = editing || !canEdit;
-      saveFileBtn.disabled = !editing;
+      editFileBtn.disabled = editing || !canEdit || readOnly;
+      saveFileBtn.disabled = !editing || readOnly;
       cancelEditBtn.disabled = !editing;
       saveFileBtn.classList.toggle('primary', editing);
+    }
+
+    function applySessionAccessState() {
+      const readOnly = sessionAccess.readOnly === true;
+      const bound = sessionAccess.boundTerminalId;
+      const disableTerminalOps = readOnly || Boolean(bound);
+
+      newTabBtn.disabled = disableTerminalOps;
+      openShellHereBtn.disabled = disableTerminalOps;
+      if (shareBtn) {
+        shareBtn.disabled = readOnly || Boolean(sessionAccess.tempLinkId);
+      }
+
+      if (bound && activeTerminalId && activeTerminalId !== bound) {
+        connectTerminal(bound, { skipScrollback: false });
+      }
+      updateEditorActionState();
     }
 
     function chooseLogoutMode() {
@@ -556,6 +721,90 @@
       }
     }
 
+    async function fetchPublicStatus() {
+      try {
+        const res = await api('/auth/public-status');
+        if (!res.ok) return null;
+        return res.json();
+      } catch {
+        return null;
+      }
+    }
+
+    async function refreshLoginNote() {
+      const status = await fetchPublicStatus();
+      if (!status) return;
+      loginNoteEl.textContent = `No login activity: auto-shutdown in ${formatSeconds(status.shutdown_remaining_secs)}.`;
+    }
+
+    function setLoginPolling(enabled) {
+      if (publicTimer) {
+        clearInterval(publicTimer);
+        publicTimer = null;
+      }
+      if (enabled) {
+        refreshLoginNote();
+        publicTimer = setInterval(refreshLoginNote, 15000);
+      } else {
+        loginNoteEl.textContent = '';
+      }
+    }
+
+    async function fetchSessionStatus() {
+      try {
+        const res = await api('/auth/session/status');
+        if (!res.ok) return null;
+        return res.json();
+      } catch {
+        return null;
+      }
+    }
+
+    async function extendSession(pin) {
+      return api('/auth/extend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin })
+      });
+    }
+
+    function hideSessionWarning() {
+      sessionWarningEl.style.display = 'none';
+      sessionWarningTextEl.textContent = '';
+    }
+
+    async function refreshSessionWarning() {
+      const status = await fetchSessionStatus();
+      if (!status) {
+        hideSessionWarning();
+        return;
+      }
+      sessionAccess.readOnly = status.read_only === true;
+      sessionAccess.boundTerminalId = status.bound_terminal_id || null;
+      sessionAccess.tempLinkId = status.temp_link_id || null;
+      applySessionAccessState();
+      const remaining = Math.min(status.remaining_idle_secs, status.remaining_absolute_secs);
+      if (remaining <= status.warning_window_secs) {
+        sessionWarningTextEl.textContent = `Session will expire in ${formatSeconds(remaining)}.`;
+        sessionWarningEl.style.display = 'flex';
+      } else {
+        hideSessionWarning();
+      }
+    }
+
+    function setSessionPolling(enabled) {
+      if (sessionTimer) {
+        clearInterval(sessionTimer);
+        sessionTimer = null;
+      }
+      if (enabled) {
+        refreshSessionWarning();
+        sessionTimer = setInterval(refreshSessionWarning, 10000);
+      } else {
+        hideSessionWarning();
+      }
+    }
+
     function showLogin(message) {
       app.style.display = 'none';
       login.style.display = 'flex';
@@ -568,6 +817,12 @@
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
+      setTempLinksModal(false);
+      tempLinks = [];
+      shareLinkOutputEl.textContent = '';
+      sessionAccess = { readOnly: false, boundTerminalId: null, tempLinkId: null };
+      setSessionPolling(false);
+      setLoginPolling(true);
       updateEditorActionState();
     }
 
@@ -601,6 +856,10 @@
     }
 
     function connectTerminal(terminalId, options = {}) {
+      if (sessionAccess.boundTerminalId && terminalId !== sessionAccess.boundTerminalId) {
+        alert('This session is bound to another terminal tab.');
+        return;
+      }
       const switchingTerminal = terminalId !== activeTerminalId;
       activeTerminalId = terminalId;
       renderTerminalTabs();
@@ -699,6 +958,89 @@
       });
     }
 
+    function setTempLinksModal(open) {
+      if (open) {
+        shareModal.classList.add('open');
+        refreshTempLinks();
+        if (tempLinksRefreshTimer) clearInterval(tempLinksRefreshTimer);
+        tempLinksRefreshTimer = setInterval(() => renderTempLinks(), 1000);
+      } else {
+        shareModal.classList.remove('open');
+        if (tempLinksRefreshTimer) {
+          clearInterval(tempLinksRefreshTimer);
+          tempLinksRefreshTimer = null;
+        }
+      }
+    }
+
+    function renderTempLinks() {
+      tempLinksListEl.innerHTML = '';
+      if (tempLinks.length === 0) {
+        tempLinksListEl.textContent = 'No active temporary links.';
+        return;
+      }
+      const now = Math.floor(Date.now() / 1000);
+      for (const item of tempLinks) {
+        const row = document.createElement('div');
+        row.className = 'temp-link-item';
+        const remaining = Math.max(0, (item.expires_at_unix || 0) - now);
+        row.innerHTML = `
+          <div><strong>${item.id}</strong> • ${item.scope}</div>
+          <div class="meta">Uses ${item.used_count}/${item.max_uses} • Expires in ${formatSeconds(remaining)}${item.bound_terminal_id ? ` • tab ${item.bound_terminal_id}` : ''}</div>
+        `;
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const revokeBtn = document.createElement('button');
+        revokeBtn.className = 'ghost';
+        revokeBtn.textContent = 'Revoke';
+        revokeBtn.onclick = async () => {
+          const res = await api(`/auth/temp-links/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+          if (res.status === 204) {
+            await refreshTempLinks();
+          }
+        };
+        actions.appendChild(revokeBtn);
+        row.appendChild(actions);
+        tempLinksListEl.appendChild(row);
+      }
+    }
+
+    async function refreshTempLinks() {
+      const res = await api('/auth/temp-links');
+      if (!res.ok) {
+        tempLinks = [];
+        renderTempLinks();
+        return;
+      }
+      tempLinks = await res.json();
+      renderTempLinks();
+    }
+
+    async function createTempLink() {
+      const oneTime = tempOneTimeEl.checked;
+      const payload = {
+        ttl_minutes: Number(tempTtlEl.value || 15),
+        scope: tempScopeEl.value,
+        one_time: oneTime,
+        max_uses: oneTime ? 1 : Number(tempMaxUsesEl.value || 5),
+        bound_terminal_id: tempBindTerminalEl.checked ? activeTerminalId : null
+      };
+      const res = await api('/auth/temp-links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        alert(msg || 'Failed to create temporary link');
+        return;
+      }
+      const created = await res.json();
+      shareLinkOutputEl.textContent = `${location.origin}${created.url}`;
+      await navigator.clipboard?.writeText(`${location.origin}${created.url}`).catch(() => {});
+      await refreshTempLinks();
+    }
+
     async function loadTerminals() {
       const res = await api('/api/terminals');
       if (!res.ok) throw new Error('failed terminals');
@@ -713,6 +1055,10 @@
     }
 
     async function createTerminal(cwd) {
+      if (sessionAccess.readOnly || sessionAccess.boundTerminalId) {
+        alert('This session cannot create terminal tabs.');
+        return null;
+      }
       const res = await api('/api/terminals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -732,6 +1078,10 @@
     }
 
     async function deleteTerminal(id) {
+      if (sessionAccess.readOnly || sessionAccess.boundTerminalId) {
+        alert('This session cannot close terminal tabs.');
+        return;
+      }
       const res = await api(`/api/terminals/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (res.status !== 204) {
         alert('Cannot close terminal');
@@ -764,6 +1114,10 @@
     }
 
     async function renameTerminal(id, title) {
+      if (sessionAccess.readOnly || sessionAccess.boundTerminalId) {
+        alert('This session cannot rename terminal tabs.');
+        return null;
+      }
       const res = await api(`/api/terminals/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -795,10 +1149,6 @@
         const tab = document.createElement('div');
         tab.className = `tab ${item.id === activeTerminalId ? 'active' : ''}`;
         tab.onclick = () => connectTerminal(item.id);
-        tab.ondblclick = (e) => {
-          e.stopPropagation();
-          promptRenameTerminal(item);
-        };
 
         const title = document.createElement('span');
         title.className = 'title';
@@ -822,20 +1172,8 @@
           e.stopPropagation();
           moveTerminalTab(index, 1);
         };
-        
-        tab.appendChild(leftBtn);
         tab.appendChild(title);
         tab.appendChild(rightBtn);
-
-        const renameBtn = document.createElement('button');
-        renameBtn.className = 'icon-btn';
-        renameBtn.title = 'Rename tab';
-        renameBtn.textContent = '✎';
-        renameBtn.onclick = (e) => {
-          e.stopPropagation();
-          promptRenameTerminal(item);
-        };
-        tab.appendChild(renameBtn);
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'icon-btn';
@@ -1016,6 +1354,10 @@
 
     async function saveActiveFile() {
       if (!editingPath) return;
+      if (sessionAccess.readOnly) {
+        alert('Read-only session cannot save files.');
+        return;
+      }
       const content = editorEl.value;
       const patch = computePatch(editingOriginal, content);
       const res = await api('/api/fs/file/diff', {
@@ -1112,8 +1454,11 @@
       initTerminal();
       login.style.display = 'none';
       app.style.display = 'flex';
+      setLoginPolling(false);
       await Promise.all([loadTerminals(), renderTree()]);
       await refreshUsage();
+      await refreshSessionWarning();
+      setSessionPolling(true);
       if (usageTimer) {
         clearInterval(usageTimer);
       }
@@ -1268,7 +1613,7 @@
       if (lockSystem === null) return;
       loggingOut = true;
       logoutNotice = lockSystem
-        ? 'Logged out and locked access. Restart CodeWebway to login again.'
+        ? 'Lockout enabled. Server is shutting down now.'
         : 'Logged out.';
 
       await logout(lockSystem);
@@ -1288,9 +1633,44 @@
         clearInterval(usageTimer);
         usageTimer = null;
       }
+      setSessionPolling(false);
+      setLoginPolling(true);
+    });
+
+    if (shareBtn) {
+      shareBtn.addEventListener('click', async () => {
+        if (shareBtn.disabled) return;
+        shareLinkOutputEl.textContent = '';
+        await refreshTempLinks();
+        setTempLinksModal(true);
+      });
+    }
+
+    shareCloseBtn.addEventListener('click', () => setTempLinksModal(false));
+    shareModal.addEventListener('click', (e) => {
+      if (e.target === shareModal) setTempLinksModal(false);
+    });
+
+    createTempLinkBtn.addEventListener('click', () => createTempLink());
+    tempOneTimeEl.addEventListener('change', () => {
+      tempMaxUsesEl.disabled = tempOneTimeEl.checked;
+    });
+    tempMaxUsesEl.disabled = tempOneTimeEl.checked;
+
+    staySignedInBtn.addEventListener('click', async () => {
+      const pin = window.prompt('Confirm PIN to extend session:');
+      if (pin === null) return;
+      const res = await extendSession(pin.trim());
+      if (!res.ok) {
+        alert('PIN invalid or session expired.');
+        return;
+      }
+      hideSessionWarning();
+      await refreshSessionWarning();
     });
 
     updateEditorActionState();
+    setLoginPolling(true);
   </script>
 </body>
 </html>

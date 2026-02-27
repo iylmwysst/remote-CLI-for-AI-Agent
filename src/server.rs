@@ -10,7 +10,7 @@ use axum::{
         Json, Path as AxumPath, Query, State, WebSocketUpgrade,
     },
     http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post},
     Router,
 };
@@ -27,6 +27,9 @@ use crate::session::{self, Session};
 
 const MAX_FILE_PREVIEW_BYTES: usize = 256 * 1024;
 const MAX_FILE_EDIT_BYTES: usize = 512 * 1024;
+const MAX_ACTIVE_TEMP_LINKS: usize = 2;
+const DEFAULT_TEMP_LINK_TTL_MINUTES: u64 = 15;
+const TEMP_LINK_GRACE_SECS: u64 = 120;
 
 pub struct AppState {
     pub password: String,
@@ -39,6 +42,16 @@ pub struct AppState {
     pub root_dir: PathBuf,
     pub scrollback: usize,
     pub usage: Mutex<UsageTracker>,
+    pub ws_connections: Mutex<usize>,
+    pub max_ws_connections: usize,
+    pub idle_timeout: Duration,
+    pub shutdown_grace: Duration,
+    pub warning_window: Duration,
+    pub shutdown_deadline: Mutex<Instant>,
+    pub shutdown_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    pub temp_links: Mutex<TempLinkStore>,
+    pub temp_grants: Mutex<HashMap<String, TempSessionGrant>>,
+    pub temp_link_signing_key: String,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +63,20 @@ pub struct LoginRequest {
 #[derive(Deserialize)]
 pub struct LogoutRequest {
     revoke_all: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct ExtendSessionRequest {
+    pin: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateTempLinkRequest {
+    ttl_minutes: Option<u64>,
+    scope: Option<String>,
+    one_time: Option<bool>,
+    max_uses: Option<u32>,
+    bound_terminal_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -233,6 +260,84 @@ struct UsageResponse {
     session_total_bytes: u64,
 }
 
+#[derive(Serialize)]
+struct SessionStatusResponse {
+    remaining_idle_secs: u64,
+    remaining_absolute_secs: u64,
+    warning_window_secs: u64,
+    read_only: bool,
+    bound_terminal_id: Option<String>,
+    temp_link_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PublicStatusResponse {
+    shutdown_remaining_secs: u64,
+    access_locked: bool,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TempLinkScope {
+    ReadOnly,
+    Interactive,
+}
+
+impl TempLinkScope {
+    pub fn from_input(value: &str) -> Option<Self> {
+        match value {
+            "read-only" => Some(Self::ReadOnly),
+            "interactive" => Some(Self::Interactive),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TempLinkRecord {
+    id: String,
+    created_at_unix: u64,
+    expires_at_unix: u64,
+    revoked_at_unix: Option<u64>,
+    max_uses: u32,
+    used_count: u32,
+    scope: TempLinkScope,
+    bound_terminal_id: Option<String>,
+    created_by_session: String,
+}
+
+#[derive(Clone)]
+pub struct TempSessionGrant {
+    read_only: bool,
+    bound_terminal_id: Option<String>,
+    source_link_id: String,
+}
+
+#[derive(Serialize)]
+struct TempLinkSummary {
+    id: String,
+    created_at_unix: u64,
+    expires_at_unix: u64,
+    remaining_secs: u64,
+    max_uses: u32,
+    used_count: u32,
+    scope: TempLinkScope,
+    bound_terminal_id: Option<String>,
+    created_by_session: String,
+}
+
+#[derive(Serialize)]
+pub struct TempLinkCreateResponse {
+    pub id: String,
+    pub url: String,
+    pub created_at_unix: u64,
+    pub expires_at_unix: u64,
+    pub remaining_secs: u64,
+    pub max_uses: u32,
+    pub scope: TempLinkScope,
+    pub bound_terminal_id: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 struct UsageSnapshot {
     today_rx_bytes: u64,
@@ -345,20 +450,168 @@ impl FailedLoginTracker {
 }
 
 pub struct SessionStore {
-    by_token: HashMap<String, Instant>,
-    ttl: Duration,
+    by_token: HashMap<String, SessionRecord>,
+    idle_timeout: Duration,
+    absolute_timeout: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct SessionRecord {
+    created_at: Instant,
+    last_activity_at: Instant,
+}
+
+pub struct TempLinkStore {
+    by_id: HashMap<String, TempLinkRecord>,
+}
+
+impl TempLinkStore {
+    pub fn new() -> Self {
+        Self {
+            by_id: HashMap::new(),
+        }
+    }
+
+    fn make_id(&self) -> String {
+        loop {
+            let id: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(10)
+                .map(char::from)
+                .collect();
+            if !self.by_id.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    fn purge_stale(&mut self, now_unix: u64) {
+        self.by_id.retain(|_, record| {
+            record.revoked_at_unix.is_none()
+                && record.used_count < record.max_uses
+                && now_unix < record.expires_at_unix
+        });
+    }
+
+    fn active_count(&mut self, now_unix: u64) -> usize {
+        self.purge_stale(now_unix);
+        self.by_id.len()
+    }
+
+    fn create(
+        &mut self,
+        now_unix: u64,
+        ttl_minutes: u64,
+        max_uses: u32,
+        scope: TempLinkScope,
+        bound_terminal_id: Option<String>,
+        created_by_session: String,
+    ) -> anyhow::Result<TempLinkRecord> {
+        if self.active_count(now_unix) >= MAX_ACTIVE_TEMP_LINKS {
+            anyhow::bail!(
+                "Maximum active temporary links reached ({}). Revoke one first.",
+                MAX_ACTIVE_TEMP_LINKS
+            );
+        }
+        let id = self.make_id();
+        let record = TempLinkRecord {
+            id: id.clone(),
+            created_at_unix: now_unix,
+            expires_at_unix: now_unix.saturating_add(ttl_minutes.saturating_mul(60)),
+            revoked_at_unix: None,
+            max_uses,
+            used_count: 0,
+            scope,
+            bound_terminal_id,
+            created_by_session,
+        };
+        self.by_id.insert(id, record.clone());
+        Ok(record)
+    }
+
+    fn list_active(&mut self, now_unix: u64) -> Vec<TempLinkSummary> {
+        self.purge_stale(now_unix);
+        let mut out: Vec<TempLinkSummary> = self
+            .by_id
+            .values()
+            .map(|record| TempLinkSummary {
+                id: record.id.clone(),
+                created_at_unix: record.created_at_unix,
+                expires_at_unix: record.expires_at_unix,
+                remaining_secs: record.expires_at_unix.saturating_sub(now_unix),
+                max_uses: record.max_uses,
+                used_count: record.used_count,
+                scope: record.scope,
+                bound_terminal_id: record.bound_terminal_id.clone(),
+                created_by_session: record.created_by_session.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.expires_at_unix
+                .cmp(&b.expires_at_unix)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out
+    }
+
+    fn revoke(&mut self, id: &str, now_unix: u64) -> bool {
+        let Some(record) = self.by_id.get_mut(id) else {
+            return false;
+        };
+        record.revoked_at_unix = Some(now_unix);
+        true
+    }
+
+    fn revoke_all(&mut self, now_unix: u64) {
+        for record in self.by_id.values_mut() {
+            record.revoked_at_unix = Some(now_unix);
+        }
+    }
+
+    fn redeem(
+        &mut self,
+        id: &str,
+        now_unix: u64,
+        token_expires_unix: u64,
+    ) -> Option<(String, TempLinkScope, Option<String>)> {
+        let record = self.by_id.get_mut(id)?;
+        if record.revoked_at_unix.is_some() {
+            return None;
+        }
+        if record.expires_at_unix != token_expires_unix {
+            return None;
+        }
+        if now_unix > record.expires_at_unix.saturating_add(TEMP_LINK_GRACE_SECS) {
+            return None;
+        }
+        if record.used_count >= record.max_uses {
+            return None;
+        }
+        record.used_count = record.used_count.saturating_add(1);
+        Some((
+            record.id.clone(),
+            record.scope,
+            record.bound_terminal_id.clone(),
+        ))
+    }
 }
 
 impl SessionStore {
-    pub fn new(ttl: Duration) -> Self {
+    pub fn new(idle_timeout: Duration, absolute_timeout: Duration) -> Self {
         Self {
             by_token: HashMap::new(),
-            ttl,
+            idle_timeout,
+            absolute_timeout,
         }
     }
 
     fn purge_expired(&mut self, now: Instant) {
-        self.by_token.retain(|_, expires_at| *expires_at > now);
+        let idle_timeout = self.idle_timeout;
+        let absolute_timeout = self.absolute_timeout;
+        self.by_token.retain(|_, record| {
+            now.duration_since(record.last_activity_at) < idle_timeout
+                && now.duration_since(record.created_at) < absolute_timeout
+        });
     }
 
     pub fn create(&mut self, now: Instant) -> String {
@@ -368,13 +621,49 @@ impl SessionStore {
             .take(48)
             .map(char::from)
             .collect();
-        self.by_token.insert(token.clone(), now + self.ttl);
+        self.by_token.insert(
+            token.clone(),
+            SessionRecord {
+                created_at: now,
+                last_activity_at: now,
+            },
+        );
         token
     }
 
     pub fn is_valid(&mut self, token: &str, now: Instant) -> bool {
         self.purge_expired(now);
         self.by_token.contains_key(token)
+    }
+
+    pub fn touch_if_valid(&mut self, token: &str, now: Instant) -> bool {
+        self.purge_expired(now);
+        let Some(record) = self.by_token.get_mut(token) else {
+            return false;
+        };
+        if now.duration_since(record.created_at) >= self.absolute_timeout {
+            self.by_token.remove(token);
+            return false;
+        }
+        record.last_activity_at = now;
+        true
+    }
+
+    pub fn remaining_secs(&mut self, token: &str, now: Instant) -> Option<(u64, u64)> {
+        self.purge_expired(now);
+        let record = *self.by_token.get(token)?;
+        let idle_elapsed = now.duration_since(record.last_activity_at);
+        let absolute_elapsed = now.duration_since(record.created_at);
+        if idle_elapsed >= self.idle_timeout || absolute_elapsed >= self.absolute_timeout {
+            self.by_token.remove(token);
+            return None;
+        }
+        let idle_remaining = self.idle_timeout.saturating_sub(idle_elapsed).as_secs();
+        let absolute_remaining = self
+            .absolute_timeout
+            .saturating_sub(absolute_elapsed)
+            .as_secs();
+        Some((idle_remaining, absolute_remaining))
     }
 
     pub fn revoke(&mut self, token: &str) {
@@ -386,13 +675,22 @@ impl SessionStore {
     }
 }
 
-pub fn router(state: AppState) -> Router {
+pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/favicon.svg", get(serve_favicon))
         .route("/auth/login", post(auth_login))
         .route("/auth/logout", post(auth_logout))
         .route("/auth/session", get(auth_session))
+        .route("/auth/session/status", get(auth_session_status))
+        .route("/auth/extend", post(auth_extend))
+        .route(
+            "/auth/temp-links",
+            get(list_temp_links).post(create_temp_link),
+        )
+        .route("/auth/temp-links/:id", delete(revoke_temp_link))
+        .route("/auth/public-status", get(auth_public_status))
+        .route("/t/:token", get(redeem_temp_link))
         .route("/api/terminals", get(list_terminals).post(create_terminal))
         .route(
             "/api/terminals/:id",
@@ -403,7 +701,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/fs/file/diff", patch(save_file_diff))
         .route("/api/usage", get(usage_stats))
         .route("/ws", get(ws_handler))
-        .with_state(Arc::new(state))
+        .with_state(state)
         .layer(CompressionLayer::new())
 }
 
@@ -457,6 +755,7 @@ async fn auth_login(
         limiter.clear(&client);
         let mut sessions = state.sessions.lock().unwrap();
         let session_token = sessions.create(now);
+        bump_shutdown_deadline_from_activity(&state, now);
         let set_cookie = format!(
             "codewebway_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800",
             session_token
@@ -478,10 +777,304 @@ async fn auth_login(
 }
 
 async fn auth_session(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_some() {
+    if has_valid_session_cookie(&headers, &state, false).is_some() {
         return (StatusCode::OK, "OK").into_response();
     }
     (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+}
+
+async fn auth_session_status(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, false) else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    let now = Instant::now();
+    let remaining = {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.remaining_secs(&session_token, now)
+    };
+    let Some((remaining_idle_secs, remaining_absolute_secs)) = remaining else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    let grant = state
+        .temp_grants
+        .lock()
+        .unwrap()
+        .get(&session_token)
+        .cloned();
+
+    Json(SessionStatusResponse {
+        remaining_idle_secs,
+        remaining_absolute_secs,
+        warning_window_secs: state.warning_window.as_secs(),
+        read_only: grant.as_ref().map(|g| g.read_only).unwrap_or(false),
+        bound_terminal_id: grant.as_ref().and_then(|g| g.bound_terminal_id.clone()),
+        temp_link_id: grant.as_ref().map(|g| g.source_link_id.clone()),
+    })
+    .into_response()
+}
+
+async fn auth_extend(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ExtendSessionRequest>,
+) -> Response {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, false) else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    let pin_ok = verify_pin(req.pin.as_deref(), state.pin.as_deref());
+    if !pin_ok {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let now = Instant::now();
+    let touched = {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.touch_if_valid(&session_token, now)
+    };
+    if !touched {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    bump_shutdown_deadline_from_activity(&state, now);
+    (StatusCode::OK, "OK").into_response()
+}
+
+async fn create_temp_link(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTempLinkRequest>,
+) -> Response {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot create temporary links",
+        )
+            .into_response();
+    }
+    if is_temporary_session(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Temporary sessions cannot create more links",
+        )
+            .into_response();
+    }
+
+    let ttl_minutes = req.ttl_minutes.unwrap_or(DEFAULT_TEMP_LINK_TTL_MINUTES);
+    if !matches!(ttl_minutes, 5 | 15 | 60) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ttl_minutes must be one of: 5, 15, 60",
+        )
+            .into_response();
+    }
+
+    let scope = match req.scope.as_deref() {
+        None => TempLinkScope::ReadOnly,
+        Some(raw) => match TempLinkScope::from_input(raw) {
+            Some(scope) => scope,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "scope must be read-only or interactive",
+                )
+                    .into_response()
+            }
+        },
+    };
+
+    let one_time = req.one_time.unwrap_or(true);
+    let max_uses = if one_time {
+        1
+    } else {
+        req.max_uses.unwrap_or(5)
+    };
+    if max_uses == 0 || max_uses > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "max_uses must be between 1 and 100",
+        )
+            .into_response();
+    }
+
+    let bound_terminal_id = req.bound_terminal_id.and_then(|id| {
+        let trimmed = id.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    if let Some(ref id) = bound_terminal_id {
+        let exists = state.terminals.lock().unwrap().get_session(id).is_some();
+        if !exists {
+            return (StatusCode::BAD_REQUEST, "bound_terminal_id not found").into_response();
+        }
+    }
+
+    let now_unix = unix_now();
+    let created = {
+        let mut links = state.temp_links.lock().unwrap();
+        match links.create(
+            now_unix,
+            ttl_minutes,
+            max_uses,
+            scope,
+            bound_terminal_id.clone(),
+            session_token,
+        ) {
+            Ok(record) => record,
+            Err(err) => return (StatusCode::TOO_MANY_REQUESTS, err.to_string()).into_response(),
+        }
+    };
+    let token = mint_temp_link_token(
+        &state.temp_link_signing_key,
+        &created.id,
+        created.expires_at_unix,
+    );
+
+    let payload = TempLinkCreateResponse {
+        id: created.id,
+        url: format!("/t/{token}"),
+        created_at_unix: created.created_at_unix,
+        expires_at_unix: created.expires_at_unix,
+        remaining_secs: created.expires_at_unix.saturating_sub(now_unix),
+        max_uses: created.max_uses,
+        scope: created.scope,
+        bound_terminal_id: created.bound_terminal_id,
+    };
+    count_tx_json(&state, &payload);
+    (StatusCode::CREATED, Json(payload)).into_response()
+}
+
+async fn list_temp_links(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot list temporary links",
+        )
+            .into_response();
+    }
+    if is_temporary_session(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Temporary sessions cannot list links",
+        )
+            .into_response();
+    }
+    let now_unix = unix_now();
+    let payload = state.temp_links.lock().unwrap().list_active(now_unix);
+    count_tx_json(&state, &payload);
+    Json(payload).into_response()
+}
+
+async fn revoke_temp_link(
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot revoke temporary links",
+        )
+            .into_response();
+    }
+    if is_temporary_session(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Temporary sessions cannot revoke links",
+        )
+            .into_response();
+    }
+    let revoked = state.temp_links.lock().unwrap().revoke(&id, unix_now());
+    if revoked {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    (StatusCode::NOT_FOUND, "Temporary link not found").into_response()
+}
+
+async fn redeem_temp_link(
+    AxumPath(token): AxumPath<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if *state.access_locked.lock().unwrap() {
+        return (
+            StatusCode::LOCKED,
+            "Access is locked. Restart CodeWebway to enable login again.",
+        )
+            .into_response();
+    }
+
+    let parsed = parse_and_verify_temp_link_token(&state.temp_link_signing_key, &token);
+    let Some(parsed) = parsed else {
+        return temp_link_error_page(
+            "Temporary link invalid",
+            "This temporary link is invalid. Please request a new link from the sender.",
+        );
+    };
+
+    let now = Instant::now();
+    let now_unix = unix_now();
+    if now_unix > parsed.expires_at_unix.saturating_add(TEMP_LINK_GRACE_SECS) {
+        return temp_link_error_page(
+            "Temporary link expired",
+            "This link has expired. If you still need access, please contact the sender for a new link.",
+        );
+    }
+
+    let redeemed =
+        state
+            .temp_links
+            .lock()
+            .unwrap()
+            .redeem(&parsed.id, now_unix, parsed.expires_at_unix);
+    let Some((link_id, scope, bound_terminal_id)) = redeemed else {
+        return temp_link_error_page(
+            "Temporary link unavailable",
+            "This link is no longer available (expired, revoked, or already used). Please request a new link.",
+        );
+    };
+
+    let session_token = {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.create(now)
+    };
+
+    state.temp_grants.lock().unwrap().insert(
+        session_token.clone(),
+        TempSessionGrant {
+            read_only: scope == TempLinkScope::ReadOnly,
+            bound_terminal_id,
+            source_link_id: link_id,
+        },
+    );
+    bump_shutdown_deadline_from_activity(&state, now);
+
+    let set_cookie = format!(
+        "codewebway_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800",
+        session_token
+    );
+    let mut response = Redirect::to("/").into_response();
+    if let Ok(value) = set_cookie.parse() {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+async fn auth_public_status(State(state): State<Arc<AppState>>) -> Response {
+    let remaining = shutdown_remaining_secs(&state, Instant::now());
+    Json(PublicStatusResponse {
+        shutdown_remaining_secs: remaining,
+        access_locked: *state.access_locked.lock().unwrap(),
+    })
+    .into_response()
 }
 
 async fn auth_logout(
@@ -499,10 +1092,14 @@ async fn auth_logout(
                 return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
             }
             sessions.revoke_all();
+            state.temp_grants.lock().unwrap().clear();
+            state.temp_links.lock().unwrap().revoke_all(unix_now());
             *state.access_locked.lock().unwrap() = true;
             state.terminals.lock().unwrap().remove_all();
+            let _ = state.shutdown_tx.send(());
         } else {
             sessions.revoke(&current);
+            state.temp_grants.lock().unwrap().remove(&current);
         }
     } else if revoke_all {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
@@ -520,10 +1117,13 @@ async fn auth_logout(
 }
 
 async fn list_terminals(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    let mut items = state.terminals.lock().unwrap().list();
+    if let Some(bound_id) = session_bound_terminal_id(&state, &session_token) {
+        items.retain(|item| item.id == bound_id);
     }
-    let items = state.terminals.lock().unwrap().list();
     Json(items).into_response()
 }
 
@@ -532,8 +1132,22 @@ async fn create_terminal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateTerminalRequest>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot create terminals",
+        )
+            .into_response();
+    }
+    if session_bound_terminal_id(&state, &session_token).is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            "This session is bound to one terminal and cannot create more",
+        )
+            .into_response();
     }
 
     let cwd = match resolve_user_path(&state.root_dir, req.cwd.as_deref()) {
@@ -570,8 +1184,22 @@ async fn delete_terminal(
     AxumPath(id): AxumPath<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot close terminals",
+        )
+            .into_response();
+    }
+    if session_bound_terminal_id(&state, &session_token).is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            "This session is bound to one terminal and cannot close terminals",
+        )
+            .into_response();
     }
     let removed = state.terminals.lock().unwrap().remove(&id);
     if removed {
@@ -586,8 +1214,22 @@ async fn rename_terminal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RenameTerminalRequest>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot rename terminals",
+        )
+            .into_response();
+    }
+    if session_bound_terminal_id(&state, &session_token).is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            "This session is bound to one terminal and cannot rename terminals",
+        )
+            .into_response();
     }
     let title = req.title.trim();
     if title.is_empty() {
@@ -613,7 +1255,7 @@ async fn fs_tree(
     Query(query): Query<FsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    if has_valid_session_cookie(&headers, &state, true).is_none() {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -683,7 +1325,7 @@ async fn fs_file(
     Query(query): Query<FsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    if has_valid_session_cookie(&headers, &state, true).is_none() {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -729,8 +1371,15 @@ async fn save_file(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SaveFileRequest>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot edit files",
+        )
+            .into_response();
     }
     count_rx(&state, req.content.len() as u64);
 
@@ -768,8 +1417,15 @@ async fn save_file_diff(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SaveFileDiffRequest>,
 ) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, true) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+    if is_session_read_only(&state, &session_token) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Read-only sessions cannot edit files",
+        )
+            .into_response();
     }
     count_rx(&state, req.insert_text.len() as u64);
 
@@ -830,7 +1486,7 @@ async fn save_file_diff(
 }
 
 async fn usage_stats(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
-    if has_valid_session_cookie(&headers, &state).is_none() {
+    if has_valid_session_cookie(&headers, &state, false).is_none() {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     let snapshot = state.usage.lock().unwrap().snapshot();
@@ -858,13 +1514,22 @@ async fn ws_handler(
     if !is_allowed_origin(&headers) {
         return (StatusCode::FORBIDDEN, "Forbidden origin").into_response();
     }
-    let Some(session_token) = has_valid_session_cookie(&headers, &state) else {
+    let Some(session_token) = has_valid_session_cookie(&headers, &state, false) else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     };
 
     let Some(terminal_id) = query.terminal_id else {
         return (StatusCode::BAD_REQUEST, "terminal_id is required").into_response();
     };
+    if let Some(bound_id) = session_bound_terminal_id(&state, &session_token) {
+        if bound_id != terminal_id {
+            return (
+                StatusCode::FORBIDDEN,
+                "This session is bound to a different terminal",
+            )
+                .into_response();
+        }
+    }
     let terminal_session = {
         let manager = state.terminals.lock().unwrap();
         manager.get_session(&terminal_id)
@@ -872,6 +1537,18 @@ async fn ws_handler(
     let Some(terminal_session) = terminal_session else {
         return (StatusCode::NOT_FOUND, "Terminal not found").into_response();
     };
+
+    {
+        let mut current = state.ws_connections.lock().unwrap();
+        if *current >= state.max_ws_connections {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Maximum concurrent connections reached",
+            )
+                .into_response();
+        }
+        *current += 1;
+    }
 
     let skip_scrollback = parse_query_bool(query.skip_scrollback.as_deref());
     ws.on_upgrade(move |socket| {
@@ -881,6 +1558,7 @@ async fn ws_handler(
             session_token,
             terminal_session,
             skip_scrollback,
+            terminal_id,
         )
     })
 }
@@ -891,6 +1569,7 @@ async fn handle_socket(
     session_token: String,
     terminal: Session,
     skip_scrollback: bool,
+    terminal_id: String,
 ) {
     let (scrollback, mut rx) = {
         let s = terminal.lock().unwrap();
@@ -930,14 +1609,27 @@ async fn handle_socket(
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Binary(data))) => {
+                        if is_session_read_only(&state, &session_token) {
+                            continue;
+                        }
+                        touch_session_token_if_valid(&state, &session_token);
                         count_rx(&state, data.len() as u64);
                         let mut s = terminal.lock().unwrap();
                         let _ = s.pty_writer.write_all(&data);
                     }
                     Some(Ok(Message::Text(text))) => {
+                        if is_session_read_only(&state, &session_token) {
+                            continue;
+                        }
+                        touch_session_token_if_valid(&state, &session_token);
                         count_rx(&state, text.len() as u64);
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
                             if msg["type"] == "resize" {
+                                if let Some(bound) = session_bound_terminal_id(&state, &session_token) {
+                                    if bound != terminal_id {
+                                        continue;
+                                    }
+                                }
                                 let cols = msg["cols"].as_u64().unwrap_or(80) as u16;
                                 let rows = msg["rows"].as_u64().unwrap_or(24) as u16;
                                 let s = terminal.lock().unwrap();
@@ -956,6 +1648,9 @@ async fn handle_socket(
             }
         }
     }
+
+    let mut current = state.ws_connections.lock().unwrap();
+    *current = current.saturating_sub(1);
 }
 
 pub fn check_token(token: &str, password: &str) -> bool {
@@ -970,10 +1665,25 @@ pub fn check_token(token: &str, password: &str) -> bool {
         == 0
 }
 
-fn has_valid_session_cookie(headers: &HeaderMap, state: &Arc<AppState>) -> Option<String> {
+fn has_valid_session_cookie(
+    headers: &HeaderMap,
+    state: &Arc<AppState>,
+    touch: bool,
+) -> Option<String> {
     let session = session_token_from_headers(headers)?;
-    if !is_session_token_valid(state, &session) {
+    let now = Instant::now();
+    let valid = if touch {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.touch_if_valid(&session, now)
+    } else {
+        is_session_token_valid_at(state, &session, now)
+    };
+    if !valid {
+        state.temp_grants.lock().unwrap().remove(&session);
         return None;
+    }
+    if touch {
+        bump_shutdown_deadline_from_activity(state, now);
     }
     Some(session)
 }
@@ -990,8 +1700,47 @@ fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
 }
 
 fn is_session_token_valid(state: &Arc<AppState>, session: &str) -> bool {
+    is_session_token_valid_at(state, session, Instant::now())
+}
+
+fn is_session_token_valid_at(state: &Arc<AppState>, session: &str, now: Instant) -> bool {
     let mut sessions = state.sessions.lock().unwrap();
-    sessions.is_valid(session, Instant::now())
+    sessions.is_valid(session, now)
+}
+
+fn touch_session_token_if_valid(state: &Arc<AppState>, session: &str) -> bool {
+    let now = Instant::now();
+    let touched = {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.touch_if_valid(session, now)
+    };
+    if touched {
+        bump_shutdown_deadline_from_activity(state, now);
+    }
+    touched
+}
+
+fn is_session_read_only(state: &Arc<AppState>, session: &str) -> bool {
+    state
+        .temp_grants
+        .lock()
+        .unwrap()
+        .get(session)
+        .map(|grant| grant.read_only)
+        .unwrap_or(false)
+}
+
+fn session_bound_terminal_id(state: &Arc<AppState>, session: &str) -> Option<String> {
+    state
+        .temp_grants
+        .lock()
+        .unwrap()
+        .get(session)
+        .and_then(|grant| grant.bound_terminal_id.clone())
+}
+
+fn is_temporary_session(state: &Arc<AppState>, session: &str) -> bool {
+    state.temp_grants.lock().unwrap().contains_key(session)
 }
 
 fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
@@ -1106,11 +1855,114 @@ fn verify_pin(input: Option<&str>, expected: Option<&str>) -> bool {
     }
 }
 
+fn bump_shutdown_deadline_from_activity(state: &Arc<AppState>, now: Instant) {
+    let next_deadline = now + state.idle_timeout + state.shutdown_grace;
+    let mut deadline = state.shutdown_deadline.lock().unwrap();
+    *deadline = next_deadline;
+}
+
+pub fn shutdown_remaining_secs(state: &Arc<AppState>, now: Instant) -> u64 {
+    let deadline = *state.shutdown_deadline.lock().unwrap();
+    deadline.saturating_duration_since(now).as_secs()
+}
+
 fn utc_day_index() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(dur) => dur.as_secs() / 86_400,
         Err(_) => 0,
     }
+}
+
+fn unix_now() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(dur) => dur.as_secs(),
+        Err(_) => 0,
+    }
+}
+
+fn generate_random_token(len: usize) -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+struct ParsedTempToken {
+    id: String,
+    expires_at_unix: u64,
+}
+
+fn temp_link_signature(signing_key: &str, id: &str, expires_at_unix: u64, nonce: &str) -> String {
+    let payload = format!("{id}.{expires_at_unix}.{nonce}");
+    hash_bytes_hex(format!("{signing_key}:{payload}").as_bytes())
+}
+
+fn mint_temp_link_token(signing_key: &str, id: &str, expires_at_unix: u64) -> String {
+    let nonce = generate_random_token(24);
+    let signature = temp_link_signature(signing_key, id, expires_at_unix, &nonce);
+    format!("{id}.{expires_at_unix}.{nonce}.{signature}")
+}
+
+fn parse_and_verify_temp_link_token(signing_key: &str, token: &str) -> Option<ParsedTempToken> {
+    let mut parts = token.split('.');
+    let id = parts.next()?.to_string();
+    let expires_raw = parts.next()?;
+    let nonce = parts.next()?.to_string();
+    let signature = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let expires_at_unix = expires_raw.parse::<u64>().ok()?;
+    let expected = temp_link_signature(signing_key, &id, expires_at_unix, &nonce);
+    if !check_token(signature, &expected) {
+        return None;
+    }
+    Some(ParsedTempToken {
+        id,
+        expires_at_unix,
+    })
+}
+
+pub fn create_temp_link_for_host(
+    state: &Arc<AppState>,
+    ttl_minutes: u64,
+    scope: TempLinkScope,
+    max_uses: u32,
+    bound_terminal_id: Option<String>,
+) -> anyhow::Result<TempLinkCreateResponse> {
+    let now_unix = unix_now();
+    let created = state.temp_links.lock().unwrap().create(
+        now_unix,
+        ttl_minutes,
+        max_uses,
+        scope,
+        bound_terminal_id,
+        "host-cli".to_string(),
+    )?;
+    let token = mint_temp_link_token(
+        &state.temp_link_signing_key,
+        &created.id,
+        created.expires_at_unix,
+    );
+    Ok(TempLinkCreateResponse {
+        id: created.id,
+        url: format!("/t/{token}"),
+        created_at_unix: created.created_at_unix,
+        expires_at_unix: created.expires_at_unix,
+        remaining_secs: created.expires_at_unix.saturating_sub(now_unix),
+        max_uses: created.max_uses,
+        scope: created.scope,
+        bound_terminal_id: created.bound_terminal_id,
+    })
+}
+
+fn temp_link_error_page(title: &str, message: &str) -> Response {
+    let html = format!(
+        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{}</title><style>body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#111;color:#ddd;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}}.card{{max-width:520px;background:#1b1b1b;border:1px solid #333;border-radius:12px;padding:20px}}h1{{margin:0 0 8px;font-size:20px}}p{{margin:0;color:#bbb;line-height:1.5}}</style></head><body><div class='card'><h1>{}</h1><p>{}</p></div></body></html>",
+        title, title, message
+    );
+    (StatusCode::UNAUTHORIZED, Html(html)).into_response()
 }
 
 fn count_rx(state: &Arc<AppState>, bytes: u64) {
@@ -1267,7 +2119,7 @@ mod tests {
 
     #[test]
     fn test_session_store_expiry() {
-        let mut store = SessionStore::new(Duration::from_secs(10));
+        let mut store = SessionStore::new(Duration::from_secs(10), Duration::from_secs(60));
         let now = Instant::now();
         let token = store.create(now);
         assert!(store.is_valid(&token, now + Duration::from_secs(9)));
@@ -1298,5 +2150,86 @@ mod tests {
     fn test_verify_pin_when_not_required() {
         assert!(verify_pin(None, None));
         assert!(verify_pin(Some("anything"), None));
+    }
+
+    #[test]
+    fn test_temp_link_redeem_one_time() {
+        let mut store = TempLinkStore::new();
+        let now = 1_700_000_000u64;
+        let record = store
+            .create(
+                now,
+                15,
+                1,
+                TempLinkScope::ReadOnly,
+                None,
+                "session-main".to_string(),
+            )
+            .unwrap();
+        assert_eq!(record.max_uses, 1);
+
+        let first = store.redeem(&record.id, now + 1, record.expires_at_unix);
+        assert!(first.is_some());
+        let second = store.redeem(&record.id, now + 2, record.expires_at_unix);
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn test_temp_link_expired_not_redeemable() {
+        let mut store = TempLinkStore::new();
+        let now = 1_700_000_000u64;
+        let created = store
+            .create(
+                now,
+                5,
+                5,
+                TempLinkScope::Interactive,
+                Some("tab1".to_string()),
+                "session-main".to_string(),
+            )
+            .unwrap();
+        assert!(store
+            .redeem(
+                &created.id,
+                created.expires_at_unix + TEMP_LINK_GRACE_SECS + 1,
+                created.expires_at_unix
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn test_temp_link_revoke_removes_from_active_list() {
+        let mut store = TempLinkStore::new();
+        let now = 1_700_000_000u64;
+        let created = store
+            .create(
+                now,
+                15,
+                2,
+                TempLinkScope::Interactive,
+                None,
+                "session-main".to_string(),
+            )
+            .unwrap();
+        assert_eq!(store.list_active(now).len(), 1);
+        assert!(store.revoke(&created.id, now + 1));
+        assert!(store.list_active(now + 2).is_empty());
+    }
+
+    #[test]
+    fn test_temp_link_token_signature_roundtrip() {
+        let key = "signing-key";
+        let token = mint_temp_link_token(key, "abc123", 1_700_000_600);
+        let parsed = parse_and_verify_temp_link_token(key, &token).unwrap();
+        assert_eq!(parsed.id, "abc123");
+        assert_eq!(parsed.expires_at_unix, 1_700_000_600);
+    }
+
+    #[test]
+    fn test_temp_link_token_signature_rejects_tamper() {
+        let key = "signing-key";
+        let token = mint_temp_link_token(key, "abc123", 1_700_000_600);
+        let tampered = token.replacen("abc123", "xyz999", 1);
+        assert!(parse_and_verify_temp_link_token(key, &tampered).is_none());
     }
 }

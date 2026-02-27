@@ -33,8 +33,11 @@ Browser <-> WebSocket <-> CodeWebway <-> Host shell (PTY)
 ### Security
 
 - **2-step login**: token + PIN.
+- **PIN policy**: PIN must be numeric and at least 6 digits.
 - **Rate limit + lockout**: blocks repeated login failures.
 - **Session expiry + logout controls**: supports current-session and revoke-all behavior.
+- **Temporary links**: create time-limited share URLs with scope (`read-only` / `interactive`) and one-time use.
+- **Connection cap**: concurrent WebSocket sessions are limited (`--max-connections`).
 - **Origin validation on WebSocket**: mitigates cross-site WS hijacking.
 - **Safe default bind**: `127.0.0.1` by default; public exposure is opt-in.
 
@@ -53,6 +56,7 @@ codewebway -z
 ```
 
 Startup prints token, bind address, and open URL. Open the URL in your browser and login with token + PIN.
+Use startup flags to issue temporary links (`/t/<token>`) without sharing your primary credentials.
 
 ## CLI Usage
 
@@ -62,12 +66,21 @@ codewebway [OPTIONS]
 Options:
   --host <HOST>          Listen host [default: 127.0.0.1]
   --port <PORT>          Listen port [default: 8080]
-  --password <PASSWORD>  Fixed token (auto-generated if omitted)
-  --pin <PIN>            Secondary login PIN (prompted if omitted)
+  --password <PASSWORD>  Fixed token (min 16 chars; auto-generated if omitted)
+  --pin <PIN>            Secondary login PIN (numeric, at least 6 digits)
   --shell <PATH>         Shell executable [default: $SHELL]
   --cwd <PATH>           Working directory [default: current directory]
   --scrollback <BYTES>   Scrollback size [default: 131072]
+  --max-connections <N>  Max concurrent WebSocket connections [default: 8]
+  --temp-link            Generate one temporary link at startup
+  --temp-link-ttl-minutes <N>
+                         Temporary link TTL (5, 15, 60) [default: 15]
+  --temp-link-scope <S>  Temporary link scope: read-only|interactive [default: read-only]
+  --temp-link-max-uses <N>
+                         Temporary link max uses [default: 1]
   -z, --zrok             Start zrok public share (zrok required)
+  --public-timeout-minutes <N>
+                         Auto-disable public zrok share after N minutes
   -h, --help             Print help
 ```
 
