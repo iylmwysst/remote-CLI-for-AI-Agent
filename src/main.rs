@@ -3,6 +3,7 @@ mod config;
 mod server;
 mod session;
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,8 @@ use server::FailedLoginTracker;
 use server::TempLinkScope;
 use server::TerminalManager;
 use tokio::sync::mpsc;
+
+const ZROK_OWNER_DIR: &str = "codewebway";
 
 fn generate_token(len: usize) -> String {
     rand::thread_rng()
@@ -86,6 +89,77 @@ fn spawn_zrok(port: u16) -> anyhow::Result<Child> {
     Ok(child)
 }
 
+fn zrok_owner_file(port: u16) -> PathBuf {
+    std::env::temp_dir()
+        .join(ZROK_OWNER_DIR)
+        .join(format!("zrok-public-{port}.pid"))
+}
+
+fn read_owned_zrok_pid(port: u16) -> Option<u32> {
+    let path = zrok_owner_file(port);
+    let raw = fs::read_to_string(path).ok()?;
+    raw.trim().parse::<u32>().ok()
+}
+
+fn write_owned_zrok_pid(port: u16, pid: u32) {
+    let path = zrok_owner_file(port);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, format!("{pid}\n"));
+}
+
+fn clear_owned_zrok_pid(port: u16) {
+    let _ = fs::remove_file(zrok_owner_file(port));
+}
+
+fn process_command_line(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if cmd.is_empty() {
+        None
+    } else {
+        Some(cmd)
+    }
+}
+
+fn is_owned_public_share_process(pid: u32, port: u16) -> bool {
+    let Some(cmd) = process_command_line(pid) else {
+        return false;
+    };
+    let expected = format!("zrok share public {port}");
+    cmd.contains(&expected)
+}
+
+fn release_stale_owned_zrok_share(port: u16) {
+    let Some(pid) = read_owned_zrok_pid(port) else {
+        return;
+    };
+
+    if !is_owned_public_share_process(pid, port) {
+        clear_owned_zrok_pid(port);
+        return;
+    }
+
+    eprintln!("  zrok   : found stale CodeWebway public share (pid {pid}), releasing first");
+    let _ = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
+    std::thread::sleep(Duration::from_millis(400));
+    if is_owned_public_share_process(pid, port) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+    clear_owned_zrok_pid(port);
+}
+
 fn resolve_working_dir(config_cwd: Option<String>) -> anyhow::Result<PathBuf> {
     match config_cwd {
         Some(cwd) => Ok(PathBuf::from(cwd)),
@@ -103,7 +177,7 @@ fn stop_zrok_child(child: &mut Option<Child>, reason: &str) -> bool {
     true
 }
 
-fn monitor_zrok_child(zrok_child: Arc<Mutex<Option<Child>>>) {
+fn monitor_zrok_child(zrok_child: Arc<Mutex<Option<Child>>>, port: u16) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
         let mut child = zrok_child.lock().unwrap();
@@ -114,6 +188,7 @@ fn monitor_zrok_child(zrok_child: Arc<Mutex<Option<Child>>>) {
             Ok(Some(status)) => {
                 eprintln!("  zrok   : exited ({status})");
                 *child = None;
+                clear_owned_zrok_pid(port);
                 break;
             }
             Ok(None) => {}
@@ -222,17 +297,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let zrok_child = if cfg.zrok {
+        release_stale_owned_zrok_share(cfg.port);
         println!("  zrok   : starting public share on port {}", cfg.port);
         println!("  WARNING: Public mode exposes this host to the internet.");
         println!("           Keep Token + PIN secret.");
         println!("           End exposure with lockout + shutdown.");
-        Some(spawn_zrok(cfg.port)?)
+        let child = spawn_zrok(cfg.port)?;
+        write_owned_zrok_pid(cfg.port, child.id());
+        Some(child)
     } else {
         None
     };
     let zrok_child = Arc::new(Mutex::new(zrok_child));
     if cfg.zrok {
-        monitor_zrok_child(Arc::clone(&zrok_child));
+        monitor_zrok_child(Arc::clone(&zrok_child), cfg.port);
     }
 
     if cfg.zrok {
@@ -246,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
                 std::thread::sleep(Duration::from_secs(minutes.saturating_mul(60)));
                 let mut child = zrok_child_ref.lock().unwrap();
                 let _ = stop_zrok_child(&mut child, "public share auto-disabled");
+                clear_owned_zrok_pid(cfg.port);
             });
         } else {
             println!("  Tip    : set --public-timeout-minutes <N> for auto-disable.");
@@ -263,7 +342,11 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 line.clear();
                 match stdin.read_line(&mut line) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        eprintln!("Console input closed. Initiating shutdown.");
+                        let _ = tx.send(());
+                        break;
+                    }
                     Ok(_) => {
                         let cmd = line.trim().to_ascii_lowercase();
                         match cmd.as_str() {
@@ -277,6 +360,32 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Err(_) => break,
+                }
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(stream) => stream,
+                Err(_) => return,
+            };
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(stream) => stream,
+                Err(_) => return,
+            };
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    eprintln!("Shutdown requested by SIGTERM.");
+                    let _ = tx.send(());
+                }
+                _ = sighup.recv() => {
+                    eprintln!("Shutdown requested by SIGHUP.");
+                    let _ = tx.send(());
                 }
             }
         });
@@ -328,5 +437,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut child = zrok_child.lock().unwrap();
     let _ = stop_zrok_child(&mut child, "stopped");
+    clear_owned_zrok_pid(cfg.port);
     Ok(())
 }
