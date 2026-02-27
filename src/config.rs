@@ -36,8 +36,12 @@ pub struct Config {
     pub zrok: bool,
 
     /// Auto-disable public zrok share after N minutes (requires --zrok)
-    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "public_no_expiry")]
     pub public_timeout_minutes: Option<u64>,
+
+    /// Keep public zrok share active with no automatic expiry (requires --zrok)
+    #[arg(long, conflicts_with = "public_timeout_minutes")]
+    pub public_no_expiry: bool,
 
     /// Maximum concurrent WebSocket connections
     #[arg(long, default_value_t = 8)]
@@ -173,6 +177,25 @@ mod tests {
     fn test_public_timeout_minutes() {
         let cfg = Config::parse_from(["codewebway", "--public-timeout-minutes", "15"]);
         assert_eq!(cfg.public_timeout_minutes, Some(15));
+        assert!(!cfg.public_no_expiry);
+    }
+
+    #[test]
+    fn test_public_no_expiry_flag() {
+        let cfg = Config::parse_from(["codewebway", "--public-no-expiry"]);
+        assert!(cfg.public_no_expiry);
+        assert_eq!(cfg.public_timeout_minutes, None);
+    }
+
+    #[test]
+    fn test_public_timeout_conflicts_with_no_expiry() {
+        let parsed = Config::try_parse_from([
+            "codewebway",
+            "--public-timeout-minutes",
+            "15",
+            "--public-no-expiry",
+        ]);
+        assert!(parsed.is_err());
     }
 
     #[test]

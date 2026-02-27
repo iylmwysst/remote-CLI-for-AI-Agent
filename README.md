@@ -81,6 +81,7 @@ Options:
   -z, --zrok             Start zrok public share (zrok required)
   --public-timeout-minutes <N>
                          Auto-disable public zrok share after N minutes
+  --public-no-expiry     Keep public zrok share active until lockout + shutdown
   -h, --help             Print help
 ```
 

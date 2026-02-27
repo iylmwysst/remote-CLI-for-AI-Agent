@@ -222,7 +222,8 @@ async fn main() -> anyhow::Result<()> {
     let zrok_child = if cfg.zrok {
         println!("  zrok   : starting public share on port {}", cfg.port);
         println!("  WARNING: Public mode exposes this host to the internet.");
-        println!("           Keep Token + PIN secret and stop when not needed.");
+        println!("           Keep Token + PIN secret.");
+        println!("           End exposure with lockout + shutdown.");
         Some(spawn_zrok(cfg.port)?)
     } else {
         None
@@ -233,7 +234,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.zrok {
-        if let Some(minutes) = cfg.public_timeout_minutes {
+        if cfg.public_no_expiry {
+            println!("  Public : no automatic expiry (operator accepts risk)");
+            println!("           stays active until lockout + shutdown.");
+        } else if let Some(minutes) = cfg.public_timeout_minutes {
             println!("  Public : auto-disable after {} minute(s)", minutes);
             let zrok_child_ref = Arc::clone(&zrok_child);
             std::thread::spawn(move || {
@@ -242,10 +246,11 @@ async fn main() -> anyhow::Result<()> {
                 let _ = stop_zrok_child(&mut child, "public share auto-disabled");
             });
         } else {
-            println!("  Tip    : set --public-timeout-minutes <N> to auto-disable public mode.");
+            println!("  Tip    : set --public-timeout-minutes <N> for auto-disable.");
+            println!("           or --public-no-expiry to keep it until lockout + shutdown.");
         }
-    } else if cfg.public_timeout_minutes.is_some() {
-        println!("  Note   : --public-timeout-minutes is ignored without --zrok.");
+    } else if cfg.public_timeout_minutes.is_some() || cfg.public_no_expiry {
+        println!("  Note   : public share flags are ignored without --zrok.");
     }
 
     if io::stdin().is_terminal() {
