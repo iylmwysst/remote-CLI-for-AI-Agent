@@ -76,27 +76,42 @@ fn normalized_args() -> Vec<String> {
 
 fn spawn_zrok(port: u16) -> anyhow::Result<Child> {
     let target = port.to_string();
-    let mut child = Command::new("zrok")
+    let pretty_terminal = io::stdout().is_terminal() && io::stderr().is_terminal();
+    let mut command = Command::new("zrok");
+    command
         .args(["share", "public", &target])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            "failed to start zrok; install zrok and run `zrok enable <token>` first".to_string()
-        })?;
-    attach_zrok_logs(&mut child);
+        .stdin(Stdio::null());
+    if pretty_terminal {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+
+    let mut child = command.spawn().with_context(|| {
+        "failed to start zrok; install zrok and run `zrok enable <token>` first".to_string()
+    })?;
+    if !pretty_terminal {
+        attach_zrok_logs(&mut child);
+    }
     Ok(child)
 }
 
 fn extract_https_token(line: &str) -> Option<String> {
+    const ALLOWED_URL_CHARS: &str =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%";
     for raw in line.split_whitespace() {
         let trimmed = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '[' | ']'));
         if let Some(idx) = trimmed.find("https://") {
-            let candidate = trimmed[idx..]
-                .trim_end_matches(|c: char| matches!(c, ',' | ';' | '.' | ')' | ']' | '"' | '\''));
+            let mut candidate = String::new();
+            for ch in trimmed[idx..].chars() {
+                if ALLOWED_URL_CHARS.contains(ch) {
+                    candidate.push(ch);
+                } else {
+                    break;
+                }
+            }
             if candidate.starts_with("https://") && candidate.len() > "https://".len() {
-                return Some(candidate.to_string());
+                return Some(candidate);
             }
         }
     }
