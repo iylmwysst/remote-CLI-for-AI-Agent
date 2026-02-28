@@ -185,29 +185,26 @@ fn watch_zrok_stdout(port: u16, stdout: std::process::ChildStdout) -> std::sync:
     rx
 }
 
-/// Filter zrok's stderr: suppress info-level JSON noise, surface errors/warnings cleanly.
-fn watch_zrok_stderr(stderr: std::process::ChildStderr) {
-    use std::io::{BufRead, BufReader};
+/// Write zrok's stderr to a log file so it doesn't clutter the terminal.
+/// Returns the path of the log file so it can be shown at startup.
+fn log_zrok_stderr(port: u16, stderr: std::process::ChildStderr) -> PathBuf {
+    use std::io::{BufRead, BufReader, Write};
+    let log_path = std::env::temp_dir()
+        .join(ZROK_OWNER_DIR)
+        .join(format!("zrok-{port}.log"));
+    let path = log_path.clone();
     std::thread::spawn(move || {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let Ok(mut file) = fs::File::create(&path) else { return };
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            if line.trim_start().starts_with('{') {
-                // Parse JSON log line — only surface error/warn, drop info
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                    let level = v["level"].as_str().unwrap_or("");
-                    if level == "error" || level == "warn" {
-                        let msg = v["msg"].as_str().unwrap_or(line.as_str());
-                        eprintln!("  zrok   : [{level}] {msg}");
-                    }
-                }
-                // info and unknown levels are silently dropped
-            } else {
-                // Non-JSON (startup text, fatal messages) — forward as-is
-                eprintln!("  zrok   : {line}");
-            }
+            let _ = writeln!(file, "{line}");
         }
     });
+    log_path
 }
 
 fn extract_zrok_token(line: &str) -> Option<String> {
@@ -436,7 +433,8 @@ async fn main() -> anyhow::Result<()> {
         write_owned_zrok_pid(cfg.port, child.id());
         let url_rx = child.stdout.take().map(|s| watch_zrok_stdout(cfg.port, s));
         if let Some(stderr) = child.stderr.take() {
-            watch_zrok_stderr(stderr);
+            let log_path = log_zrok_stderr(cfg.port, stderr);
+            println!("  Log    : {} (tail -f to debug)", log_path.display());
         }
         {
             use std::io::Write;
