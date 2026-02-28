@@ -252,6 +252,38 @@ Practical attack surface with `codewebway -z --pin <pin>` (auto-generated token)
 | Session hijack | Short-lived tokens; idle + absolute expiry; PIN required to extend |
 | Temp link forgery | HMAC-signed with nonce; forgery is computationally infeasible |
 | Stale zrok share after crash | PID-file ownership check reclaims orphaned shares on restart |
+| PTY escape sequence injection | Any authenticated session can already write to the PTY — escape sequences are an in-scope capability, not a bypass. Unauthenticated users cannot reach the PTY. |
+| Privilege escalation via shell | CodeWebway runs as the invoking user. The shell it spawns inherits the same OS privileges — no privilege boundary exists by design. Run as a low-privilege user to limit blast radius. |
+
+### Secret Management
+
+**Avoid passing credentials as raw CLI arguments in shared or multi-user environments.** Arguments passed via `--password` and `--pin` are visible to other users on the same machine via `ps aux` or `/proc/<pid>/cmdline` for the lifetime of the process.
+
+Safer patterns:
+
+```bash
+# Read token from environment variable (not visible in ps on most systems)
+export CODEWEBWAY_TOKEN=$(openssl rand -hex 16)
+codewebway --password "$CODEWEBWAY_TOKEN" --pin 123456
+
+# Or: let CodeWebway auto-generate the token (printed once at startup)
+# and type the PIN interactively when prompted
+codewebway -z
+```
+
+On Linux, you can additionally restrict `/proc/<pid>/cmdline` visibility with tools like `hidepid` on the `/proc` mount, or run CodeWebway under a dedicated user account that others cannot inspect.
+
+### Credential Storage in Memory
+
+Token and PIN are stored as plain `String` values in process memory for the lifetime of the process. They are **not hashed or salted** — this is by design, because constant-time equality comparison (which prevents timing attacks) requires both values to be in plaintext at comparison time. Hashing would break this property.
+
+There is currently no explicit memory zeroing (`zeroize`) on process exit. An attacker with local memory access (e.g., `ptrace`, `/proc/<pid>/mem`, or a core dump) could extract the credentials. This is an acceptable risk for the intended single-operator personal-use case where the attacker would already need elevated OS access to perform such a read — at which point the machine itself is compromised regardless.
+
+If your threat model includes local privilege escalation, run CodeWebway under a dedicated non-root user account with minimal OS permissions, and ensure core dumps are disabled for that account.
+
+### Static Analysis
+
+CodeQL static analysis runs automatically on every push to `main` and on every pull request via GitHub Actions. Results are visible in the [Security tab](https://github.com/iylmwysst/CodeWebway/security/code-scanning) of this repository.
 
 ### Reporting a Vulnerability
 
