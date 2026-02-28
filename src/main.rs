@@ -81,7 +81,7 @@ fn spawn_zrok(port: u16) -> anyhow::Result<Child> {
         .args(["share", "public", &target, "--headless"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| {
             "failed to start zrok; install zrok and run `zrok enable <token>` first".to_string()
@@ -183,6 +183,31 @@ fn watch_zrok_stdout(port: u16, stdout: std::process::ChildStdout) -> std::sync:
         }
     });
     rx
+}
+
+/// Filter zrok's stderr: suppress info-level JSON noise, surface errors/warnings cleanly.
+fn watch_zrok_stderr(stderr: std::process::ChildStderr) {
+    use std::io::{BufRead, BufReader};
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.trim_start().starts_with('{') {
+                // Parse JSON log line — only surface error/warn, drop info
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let level = v["level"].as_str().unwrap_or("");
+                    if level == "error" || level == "warn" {
+                        let msg = v["msg"].as_str().unwrap_or(line.as_str());
+                        eprintln!("  zrok   : [{level}] {msg}");
+                    }
+                }
+                // info and unknown levels are silently dropped
+            } else {
+                // Non-JSON (startup text, fatal messages) — forward as-is
+                eprintln!("  zrok   : {line}");
+            }
+        }
+    });
 }
 
 fn extract_zrok_token(line: &str) -> Option<String> {
@@ -410,6 +435,9 @@ async fn main() -> anyhow::Result<()> {
         let mut child = spawn_zrok(cfg.port)?;
         write_owned_zrok_pid(cfg.port, child.id());
         let url_rx = child.stdout.take().map(|s| watch_zrok_stdout(cfg.port, s));
+        if let Some(stderr) = child.stderr.take() {
+            watch_zrok_stderr(stderr);
+        }
         {
             use std::io::Write;
             print!("  zrok   : กำลังเชื่อมต่อ โปรดรอ...");
