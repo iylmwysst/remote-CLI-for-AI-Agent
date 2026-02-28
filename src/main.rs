@@ -241,6 +241,7 @@ async fn main() -> anyhow::Result<()> {
         temp_grants: Mutex::new(std::collections::HashMap::new()),
         temp_link_signing_key: generate_token(48),
         auto_shutdown_disabled,
+        terminal_only: cfg.terminal_only,
     };
 
     state.terminals.lock().unwrap().create(

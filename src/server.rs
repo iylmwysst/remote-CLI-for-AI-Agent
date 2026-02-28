@@ -54,6 +54,7 @@ pub struct AppState {
     pub temp_grants: Mutex<HashMap<String, TempSessionGrant>>,
     pub temp_link_signing_key: String,
     pub auto_shutdown_disabled: bool,
+    pub terminal_only: bool,
 }
 
 #[derive(Deserialize)]
