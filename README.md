@@ -1,7 +1,7 @@
 [![CI](https://github.com/iylmwysst/CodeWebway/actions/workflows/ci.yml/badge.svg)](https://github.com/iylmwysst/CodeWebway/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/iylmwysst/CodeWebway/actions/workflows/codeql.yml/badge.svg)](https://github.com/iylmwysst/CodeWebway/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/iylmwysst/CodeWebway)](https://github.com/iylmwysst/CodeWebway/releases/latest)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 ```text
       ____          _     __        __   _
@@ -128,4 +128,4 @@ All comparisons reflect default/typical configuration. Many tools can be configu
 
 ## License
 
-GNU GPL v3.0. See [LICENSE](LICENSE).
+GNU AGPL v3.0. See [LICENSE](LICENSE).
