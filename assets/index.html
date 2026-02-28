@@ -176,7 +176,7 @@
     .tree-item.active { background: #2b2b2b; }
     .indent { margin-left: 8px; }
 
-    #terms { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    #terms { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
 
     #workspace:not(:has(#files)) #terms { flex: 1; }
     #term-tabs {
@@ -193,9 +193,12 @@
       min-width: 0;
       overflow-x: auto;
       padding: 8px;
-      scrollbar-width: none;
+      scrollbar-width: thin;
+      scrollbar-color: #3a3a3a transparent;
     }
-    #tab-scroll::-webkit-scrollbar { display: none; }
+    #tab-scroll::-webkit-scrollbar { height: 2px; }
+    #tab-scroll::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 1px; }
+    #tab-scroll::-webkit-scrollbar-track { background: transparent; }
     #tab-fixed {
       display: flex;
       align-items: center;
