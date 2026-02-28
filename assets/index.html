@@ -1458,16 +1458,18 @@
 
     async function bootstrapWorkspace() {
       initTerminal();
-      login.style.display = 'none';
-      app.style.display = 'flex';
       try {
         const caps = await api('/api/capabilities');
         if (caps && caps.terminal_only) {
           document.body.classList.add('terminal-only');
         }
       } catch {}
+      login.style.display = 'none';
+      app.style.display = 'flex';
       setLoginPolling(false);
-      await Promise.all([loadTerminals(), renderTree()]);
+      const tasks = [loadTerminals()];
+      if (!document.body.classList.contains('terminal-only')) tasks.push(renderTree());
+      await Promise.all(tasks);
       await refreshUsage();
       await refreshSessionWarning();
       setSessionPolling(true);

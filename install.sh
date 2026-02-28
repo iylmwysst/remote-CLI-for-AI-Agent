@@ -90,9 +90,33 @@ case ":${PATH}:" in
     echo "  Run:  ${BIN}"
     ;;
   *)
-    echo "  Add this to your shell profile (~/.zshrc or ~/.bashrc):"
-    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
+    # Detect shell profile
+    case "${SHELL}" in
+      */zsh)  PROFILE="${HOME}/.zshrc" ;;
+      */bash) PROFILE="${HOME}/.bashrc" ;;
+      *)      PROFILE="${HOME}/.profile" ;;
+    esac
+
+    EXPORT_LINE="export PATH=\"\$HOME/.local/bin:\$PATH\""
+
+    if ! grep -qF '.local/bin' "${PROFILE}" 2>/dev/null; then
+      if [ ! -w "${PROFILE}" ] && [ -e "${PROFILE}" ]; then
+        echo "  Warning: no write permission on ${PROFILE}"
+        echo "  Add this line manually:"
+        echo "    ${EXPORT_LINE}"
+      elif printf '\n# codewebway\n%s\n' "${EXPORT_LINE}" >> "${PROFILE}" 2>/dev/null; then
+        echo "  PATH updated in ${PROFILE}"
+        echo "  Run this once to apply now:"
+        echo "    source ${PROFILE}"
+      else
+        echo "  Warning: could not write to ${PROFILE} (permission denied)"
+        echo "  Add this line manually:"
+        echo "    ${EXPORT_LINE}"
+      fi
+    else
+      echo "  ${PROFILE} already has .local/bin in PATH"
+    fi
+
     echo "  Then run:  ${BIN}"
     ;;
 esac
