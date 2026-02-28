@@ -182,8 +182,7 @@
 
     #terms { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
-    body.terminal-only #files { display: none; }
-    body.terminal-only #terms  { flex: 1; }
+    #workspace:not(:has(#files)) #terms { flex: 1; }
     #term-tabs {
       display: flex;
       gap: 8px;
@@ -1458,17 +1457,19 @@
 
     async function bootstrapWorkspace() {
       initTerminal();
+      let terminalOnly = false;
       try {
         const caps = await api('/api/capabilities');
-        if (caps && caps.terminal_only) {
-          document.body.classList.add('terminal-only');
-        }
+        terminalOnly = !!(caps && caps.terminal_only);
       } catch {}
+      if (terminalOnly) {
+        document.getElementById('files').remove();
+      }
       login.style.display = 'none';
       app.style.display = 'flex';
       setLoginPolling(false);
       const tasks = [loadTerminals()];
-      if (!document.body.classList.contains('terminal-only')) tasks.push(renderTree());
+      if (!terminalOnly) tasks.push(renderTree());
       await Promise.all(tasks);
       await refreshUsage();
       await refreshSessionWarning();
