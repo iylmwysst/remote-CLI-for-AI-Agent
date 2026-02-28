@@ -9,7 +9,7 @@
 
 > **Browser-based remote terminal and file editor — no port forwarding, no VPS, no network admin required.**
 
-CodeWebway is a single Rust binary that gives you a full terminal and file editor in the browser. It is built for developers working on machines behind firewalls, NAT, or institutional networks where traditional SSH access is not practical.
+CodeWebway is a single Rust binary that gives you a full terminal and file editor in the browser, on any device. It is built for developers working on machines behind firewalls, NAT, or institutional networks where traditional SSH access is not practical.
 
 ## How It Works
 
@@ -19,6 +19,7 @@ Browser  ──HTTPS──▶  zrok edge  ──tunnel──▶  CodeWebway  ─
 
 - One process serves both the backend and the web UI — no separate frontend server.
 - Terminal sessions are real server-side PTYs with scrollback replay on reconnect.
+- Works on any modern browser — desktop, tablet, or mobile (iOS and Android tested).
 - The server binds to `127.0.0.1` by default. Public access is opt-in via `--zrok` or a reverse proxy.
 
 ## Quick Start
@@ -92,6 +93,7 @@ All comparisons reflect default/typical configuration. Many tools can be configu
 | **Needs VPS** | No | No | Yes | No | No |
 | **Built-in multi-factor login** | ✅ token + PIN | ❌ | ❌ | ❌ | ❌ |
 | **Browser-native (no client install)** | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **Works on mobile / tablet** | ✅ | ❌ | ❌ | ❌ | ⚠ |
 | **File editor included** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Single binary** | ✅ | ❌ | ❌ | ❌ | ✅ |
 
