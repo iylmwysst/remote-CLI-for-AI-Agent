@@ -80,7 +80,7 @@ fn spawn_zrok(port: u16) -> anyhow::Result<Child> {
     let child = Command::new("zrok")
         .args(["share", "public", &target, "--headless"])
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| {
@@ -137,51 +137,60 @@ fn clear_owned_zrok_token(port: u16) {
     let _ = fs::remove_file(zrok_token_file(port));
 }
 
-/// Query `zrok overview` and release every share pointing at our port.
-/// This cleans up zombie shares left by crashes or SIGKILL.
-fn release_zrok_shares_for_port(port: u16) {
-    let Ok(out) = Command::new("zrok").args(["overview"]).output() else { return };
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return };
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let Some(envs) = json["environments"].as_array() else { return };
-    for env in envs {
-        let Some(shares) = env["shares"].as_array() else { continue };
-        for share in shares {
-            if share["backendProxyEndpoint"].as_str() != Some(&endpoint) {
-                continue;
-            }
-            if let Some(tok) = share["shareToken"].as_str() {
-                eprintln!("  zrok   : releasing stale share {tok} on port {port}");
-                let _ = Command::new("zrok").args(["release", tok]).status();
-            }
-        }
+/// Release the share token we previously saved, if it still appears in zrok overview.
+/// Only touches the exact token we own — never affects other services' shares.
+fn release_owned_zrok_token(port: u16) {
+    let Some(tok) = read_owned_zrok_token(port) else { return };
+    // Verify the token still exists in overview before releasing.
+    let still_active = Command::new("zrok")
+        .args(["overview"])
+        .output()
+        .ok()
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
+        .and_then(|json| {
+            json["environments"].as_array().map(|envs| {
+                envs.iter().any(|env| {
+                    env["shares"]
+                        .as_array()
+                        .map(|shares| shares.iter().any(|s| s["shareToken"].as_str() == Some(&tok)))
+                        .unwrap_or(false)
+                })
+            })
+        })
+        .unwrap_or(false);
+    if still_active {
+        eprintln!("  zrok   : releasing saved share {tok}");
+        let _ = Command::new("zrok").args(["release", &tok]).status();
     }
 }
 
-/// After zrok spawns, poll overview until our share appears and save its token.
-fn track_zrok_token(port: u16) {
+/// Read zrok's stdout to capture the share URL and extract our token.
+/// This is the only reliable way to identify our share — we read directly from
+/// the process we spawned, so there is no confusion with other services.
+fn watch_zrok_stdout(port: u16, stdout: std::process::ChildStdout) {
+    use std::io::{BufRead, BufReader, Write};
     std::thread::spawn(move || {
-        let endpoint = format!("http://127.0.0.1:{port}");
-        for _ in 0..30 {
-            std::thread::sleep(Duration::from_secs(2));
-            let Ok(out) = Command::new("zrok").args(["overview"]).output() else { continue };
-            let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
-            let Some(envs) = json["environments"].as_array() else { continue };
-            for env in envs {
-                let Some(shares) = env["shares"].as_array() else { continue };
-                for share in shares {
-                    if share["backendProxyEndpoint"].as_str() == Some(&endpoint) {
-                        if let Some(tok) = share["shareToken"].as_str() {
-                            write_owned_zrok_token(port, tok);
-                            eprintln!("  zrok   : share token saved ({tok})");
-                            return;
-                        }
-                    }
-                }
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            // Forward every line to our stdout so the operator can see the URL.
+            let _ = writeln!(std::io::stdout(), "{line}");
+            // Extract token from URL: https://<token>.share.zrok.io
+            if let Some(tok) = extract_zrok_token(&line) {
+                write_owned_zrok_token(port, &tok);
+                eprintln!("  zrok   : share token saved ({tok})");
             }
         }
-        eprintln!("  zrok   : warning: could not discover share token within 60 s");
     });
+}
+
+fn extract_zrok_token(line: &str) -> Option<String> {
+    // Match https://<token>.share.zrok.io anywhere in the line.
+    let marker = ".share.zrok.io";
+    let idx = line.find(marker)?;
+    let before = &line[..idx];
+    let tok = before.split("://").last()?.trim().to_string();
+    if tok.is_empty() { None } else { Some(tok) }
 }
 
 fn process_command_line(pid: u32) -> Option<String> {
@@ -209,8 +218,8 @@ fn is_owned_public_share_process(pid: u32, port: u16) -> bool {
 }
 
 fn release_stale_owned_zrok_share(port: u16) {
-    // Always attempt to release zombie shares via zrok API first.
-    release_zrok_shares_for_port(port);
+    // Release only the exact token we own — never touches other services' shares.
+    release_owned_zrok_token(port);
     clear_owned_zrok_token(port);
 
     let Some(pid) = read_owned_zrok_pid(port) else {
@@ -398,9 +407,11 @@ async fn main() -> anyhow::Result<()> {
         println!("           Keep Token + PIN secret.");
         println!("           End exposure with lockout + shutdown.");
         println!("  Access : URL from zrok + Token={} + your PIN", token);
-        let child = spawn_zrok(cfg.port)?;
+        let mut child = spawn_zrok(cfg.port)?;
         write_owned_zrok_pid(cfg.port, child.id());
-        track_zrok_token(cfg.port);
+        if let Some(stdout) = child.stdout.take() {
+            watch_zrok_stdout(cfg.port, stdout);
+        }
         Some(child)
     } else {
         None
