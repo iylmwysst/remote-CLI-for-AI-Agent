@@ -1208,7 +1208,7 @@
           deleteTerminal(item.id);
         };
         tab.appendChild(closeBtn);
-        termTabs.appendChild(tab);
+        termTabs.insertBefore(tab, newTabBtn);
       });
     }
 
