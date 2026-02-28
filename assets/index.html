@@ -48,9 +48,18 @@
       font-size: 13px;
       cursor: pointer;
     }
-    button:hover:not(:disabled) { background: #fff; border-color: #aaa; }
+    button:hover:not(:disabled) { background: #f0f0f0; border-color: #bbb; }
     button:disabled { opacity: 0.6; cursor: wait; }
-    .ghost { background: #2d2d2d; }
+    .ghost {
+      background: transparent;
+      border-color: #3a3a3a;
+      color: #999;
+    }
+    .ghost:hover:not(:disabled) {
+      background: rgba(255,255,255,0.07);
+      border-color: #4f4f4f;
+      color: #ddd;
+    }
     #error { color: #ff8a80; margin-top: 10px; min-height: 20px; font-size: 13px; }
     #login-note {
       color: #f4c36a;
@@ -136,14 +145,26 @@
       background: #151515;
     }
     #editor-actions button {
-      background: #2d2d2d;
-      border-color: #4f4f4f;
+      background: transparent;
+      border: 1px solid #383838;
+      border-radius: 5px;
+      color: #777;
+      font-size: 16px;
+      padding: 4px 10px;
+    }
+    #editor-actions button:hover:not(:disabled) {
+      background: rgba(255,255,255,0.07);
+      border-color: #555;
       color: #ddd;
     }
     #editor-actions button.primary {
-      background: #dedede;
-      border-color: #aaa;
-      color: #111;
+      background: transparent;
+      border: 1px solid #999;
+      color: #e8e8e8;
+    }
+    #editor-actions button.primary:hover:not(:disabled) {
+      background: rgba(255,255,255,0.1);
+      border-color: #bbb;
     }
     #editor-actions button:disabled {
       opacity: 0.5;
@@ -219,10 +240,18 @@
     }
     .tab.active { border-color: #888; }
     .tab button {
-      padding: 2px 6px;
-      background: #3a3a3a;
-      border-color: #575757;
-      font-size: 11px;
+      padding: 2px 7px;
+      background: transparent;
+      border: 1px solid #383838;
+      border-radius: 5px;
+      color: #666;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .tab button:hover:not(:disabled) {
+      background: rgba(255,255,255,0.07);
+      border-color: #555;
+      color: #ccc;
     }
     .tab .title {
       max-width: 160px;
@@ -260,30 +289,40 @@
     .preview-tab {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 4px 6px;
-      border-radius: 7px;
-      border: 1px solid #383838;
-      background: #232323;
       font-size: 12px;
       white-space: nowrap;
     }
-    .preview-tab.active { border-color: #888; }
+    .preview-tab + .preview-tab {
+      border-left: 1px solid #2f2f2f;
+      margin-left: 4px;
+      padding-left: 8px;
+    }
     .preview-tab .label {
       background: transparent;
       border: 0;
-      color: #ddd;
-      padding: 0;
+      color: #999;
+      padding: 2px 4px;
       font-size: 12px;
+      cursor: pointer;
     }
+    .preview-tab.active .label { color: #e8e8e8; }
+    .preview-tab .label:hover { color: #fff; }
     .preview-tab .close {
+      background: transparent;
+      border: 1px solid #383838;
+      border-radius: 5px;
+      color: #666;
       padding: 2px 6px;
-      font-size: 11px;
-      background: #3a3a3a;
-      border: 1px solid #575757;
-      border-radius: 6px;
-      color: #fff;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
     }
+    .preview-tab .close:hover:not(:disabled) {
+      background: rgba(255,255,255,0.07);
+      border-color: #555;
+      color: #ccc;
+    }
+    .preview-tab .close:disabled { opacity: 0.3; cursor: default; }
     #terminal { flex: 1; min-height: 0; padding: 6px; }
     #logout-modal {
       position: fixed;
@@ -372,6 +411,99 @@
       justify-content: flex-end;
       gap: 8px;
     }
+    .nav-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+    }
+    #nav-back {
+      background: transparent;
+      border: 1px solid #383838;
+      border-radius: 5px;
+      color: #666;
+      padding: 2px 7px;
+      font-size: 16px;
+      line-height: 1;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    #nav-back:hover:not(:disabled) { background: rgba(255,255,255,0.07); border-color: #555; color: #ccc; }
+    #nav-back:disabled { opacity: 0.3; cursor: default; }
+    #nav-path {
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      color: #777;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #toggle-files {
+      align-self: stretch;
+      border: 0;
+      border-right: 1px solid #2f2f2f;
+      border-radius: 0;
+      background: transparent;
+      color: #666;
+      padding: 0 12px;
+      font-size: 15px;
+    }
+    #toggle-files:hover { color: #ccc; background: rgba(255,255,255,0.05); }
+    #mobile-back { display: none; }
+    #workspace.files-hidden #files { display: none; }
+    #key-strip {
+      display: none;
+      gap: 6px;
+      padding: 6px 8px;
+      border-top: 1px solid #2f2f2f;
+      background: #161616;
+      overflow-x: auto;
+      flex-shrink: 0;
+      scrollbar-width: none;
+      justify-content: center;
+    }
+    #key-strip button {
+      background: transparent;
+      border: 1px solid #383838;
+      border-radius: 5px;
+      color: #777;
+      font-size: 13px;
+      padding: 5px 12px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    #key-strip button:hover:not(:disabled) {
+      background: rgba(255,255,255,0.07);
+      border-color: #555;
+      color: #ddd;
+    }
+    @media (max-width: 767px) {
+      #workspace { position: relative; overflow: hidden; }
+      #files {
+        position: absolute;
+        inset: 0;
+        z-index: 10;
+        width: 100%;
+        min-width: 0;
+        border-right: 0;
+        display: none;
+      }
+      #files.mobile-open { display: flex; }
+      #mobile-back { display: block; }
+    }
+    @media (max-width: 1024px) {
+      #key-strip {
+        display: flex;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 9;
+      }
+      #terminal { padding-bottom: 44px; }
+    }
   </style>
 </head>
 <body>
@@ -383,7 +515,7 @@
         <input id="password" type="password" autocomplete="current-password" placeholder="Token" required />
         <div class="row">
           <input id="pin" type="password" autocomplete="one-time-code" placeholder="PIN" />
-          <button id="submit" type="submit">Connect</button>
+          <button id="submit" class="ghost" type="submit">Connect</button>
         </div>
       </div>
       <div id="error"></div>
@@ -399,24 +531,29 @@
     <div id="workspace">
       <section id="files">
         <div id="file-head">
-          <strong>Files</strong>
+          <div class="nav-row">
+            <button id="nav-back" type="button" title="Go up">‹</button>
+            <span id="nav-path">.</span>
+          </div>
           <div class="row">
-            <button id="refresh-tree" class="ghost" type="button">Refresh</button>
-            <button id="open-shell-here" class="ghost" type="button">Open Shell Here</button>
+            <button id="refresh-tree" class="ghost" type="button" title="Refresh">↺</button>
+            <button id="open-shell-here" class="ghost" type="button" title="Open shell here">⌨</button>
+            <button id="mobile-back" class="ghost" type="button" title="Close files panel">✕</button>
           </div>
         </div>
         <div id="tree"></div>
         <div id="preview-tabs"></div>
         <div id="editor-actions">
-          <button id="edit-file" class="ghost" type="button">Edit</button>
-          <button id="save-file" type="button">Save</button>
-          <button id="cancel-edit" class="ghost" type="button">Cancel</button>
+          <button id="edit-file" class="ghost" type="button" title="Edit file">✎</button>
+          <button id="save-file" type="button" title="Save file">✓</button>
+          <button id="cancel-edit" class="ghost" type="button" title="Cancel editing">✕</button>
         </div>
         <pre id="preview">Select a file to preview</pre>
         <textarea id="editor" spellcheck="false"></textarea>
       </section>
       <section id="terms">
         <div id="term-tabs">
+          <button id="toggle-files" type="button" title="Toggle files panel">≡</button>
           <div id="tab-scroll">
             <button id="new-tab" type="button" title="New terminal tab">+</button>
           </div>
@@ -429,6 +566,14 @@
           </div>
         </div>
         <div id="terminal"></div>
+        <div id="key-strip">
+          <button type="button" data-key="ctrl-c">^C</button>
+          <button type="button" data-key="tab">Tab</button>
+          <button type="button" data-key="up">↑</button>
+          <button type="button" data-key="down">↓</button>
+          <button type="button" data-key="esc">Esc</button>
+          <button type="button" data-key="ctrl-d">^D</button>
+        </div>
       </section>
     </div>
   </div>
@@ -440,7 +585,7 @@
       <div class="modal-actions">
         <button id="logout-cancel" class="ghost" type="button">Cancel</button>
         <button id="logout-only" class="ghost" type="button">Logout only</button>
-        <button id="logout-lock" type="button">Lockout + Shutdown</button>
+        <button id="logout-lock" class="ghost" type="button">Lockout + Shutdown</button>
       </div>
     </div>
   </div>
@@ -497,6 +642,11 @@
     const staySignedInBtn = document.getElementById('stay-signed-in');
     const logoutBtn = document.getElementById('logout');
     const newTabBtn = document.getElementById('new-tab');
+    const toggleFilesBtn = document.getElementById('toggle-files');
+    const mobileBackBtn = document.getElementById('mobile-back');
+    const navBackBtn = document.getElementById('nav-back');
+    const navPathEl = document.getElementById('nav-path');
+    const workspaceEl = document.getElementById('workspace');
     const termTabs = document.getElementById('term-tabs');
     const tabScroll = document.getElementById('tab-scroll');
     const treeEl = document.getElementById('tree');
@@ -533,8 +683,7 @@
 
     let terminals = [];
     let activeTerminalId = null;
-    let selectedDir = '.';
-    const expandedDirs = new Set(['.']);
+    let currentNavDir = '.';
 
     const openFiles = [];
     let activeFilePath = null;
@@ -1117,7 +1266,7 @@
       terminals.push(item);
       renderTerminalTabs();
       connectTerminal(item.id);
-      selectedDir = cwd || '.';
+      currentNavDir = cwd || '.';
       return item;
     }
 
@@ -1140,7 +1289,7 @@
       terminals = terminals.filter((t) => t.id !== id);
       if (activeTerminalId === id) {
         if (terminals.length === 0) {
-          await createTerminal(selectedDir || '.');
+          await createTerminal(currentNavDir || '.');
         } else {
           connectTerminal(terminals[0].id);
         }
@@ -1201,7 +1350,7 @@
 
         const leftBtn = document.createElement('button');
         leftBtn.className = 'icon-btn';
-        leftBtn.textContent = '←';
+        leftBtn.textContent = '‹';
         leftBtn.disabled = index === 0;
         leftBtn.onclick = (e) => {
           e.stopPropagation();
@@ -1211,7 +1360,7 @@
 
         const rightBtn = document.createElement('button');
         rightBtn.className = 'icon-btn';
-        rightBtn.textContent = '→';
+        rightBtn.textContent = '›';
         rightBtn.disabled = index === terminals.length - 1;
         rightBtn.onclick = (e) => {
           e.stopPropagation();
@@ -1222,7 +1371,7 @@
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'icon-btn';
-        closeBtn.textContent = 'x';
+        closeBtn.textContent = '×';
         closeBtn.onclick = (e) => {
           e.stopPropagation();
           deleteTerminal(item.id);
@@ -1274,7 +1423,7 @@
 
         const leftBtn = document.createElement('button');
         leftBtn.className = 'close';
-        leftBtn.textContent = '←';
+        leftBtn.textContent = '‹';
         leftBtn.disabled = index === 0;
         leftBtn.onclick = (e) => {
           e.stopPropagation();
@@ -1300,7 +1449,7 @@
 
         const rightBtn = document.createElement('button');
         rightBtn.className = 'close';
-        rightBtn.textContent = '→';
+        rightBtn.textContent = '›';
         rightBtn.disabled = index === openFiles.length - 1;
         rightBtn.onclick = (e) => {
           e.stopPropagation();
@@ -1310,7 +1459,7 @@
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'close';
-        closeBtn.textContent = 'x';
+        closeBtn.textContent = '×';
         closeBtn.onclick = (e) => {
           e.stopPropagation();
           const idx = openFiles.findIndex((item) => item.path === file.path);
@@ -1368,7 +1517,6 @@
         previewEl.style.display = 'block';
         previewEl.textContent = cached.content + (cached.truncated ? '\n\n[truncated]' : '');
         renderPreviewTabs();
-        selectedDir = parentPath(cached.path);
         updateEditorActionState();
         return;
       }
@@ -1393,7 +1541,6 @@
       previewEl.style.display = 'block';
       previewEl.textContent = file.content + (file.truncated ? '\n\n[truncated]' : '');
       renderPreviewTabs();
-      selectedDir = parentPath(file.path);
       updateEditorActionState();
     }
 
@@ -1436,63 +1583,39 @@
       editingOriginal = '';
       editorEl.style.display = 'none';
       previewEl.style.display = 'block';
-      await renderTree();
+      await renderNav();
       await refreshUsage();
       updateEditorActionState();
     }
 
-    async function renderTree() {
+    async function renderNav() {
       treeEl.innerHTML = '';
       fileMeta.clear();
-      const root = await fetchTree('.');
-      if (!root) {
-        treeEl.textContent = 'Failed to load file tree';
+      navPathEl.textContent = currentNavDir === '.' ? '/' : currentNavDir;
+      navBackBtn.disabled = (currentNavDir === '.');
+
+      const tree = await fetchTree(currentNavDir);
+      if (!tree) {
+        treeEl.textContent = 'Failed to load directory';
         return;
       }
 
-      const renderNodes = async (container, path, ancestry) => {
-        const tree = await fetchTree(path);
-        if (!tree) return;
-        for (let i = 0; i < tree.entries.length; i++) {
-          const entry = tree.entries[i];
-          fileMeta.set(entry.path, entry);
-          const isLast = i === tree.entries.length - 1;
-          const row = document.createElement('div');
-          row.className = 'tree-item';
-          if (entry.path === selectedDir) {
-            row.classList.add('active');
-          }
-          const expanded = expandedDirs.has(entry.path);
-          const icon = entry.is_dir ? (expanded ? '📂' : '📁') : '📄';
-          const toggle = entry.is_dir ? (expanded ? '▾' : '▸') : ' ';
-          const guides = ancestry.map((hasNext) => (hasNext ? '│  ' : '   ')).join('');
-          const branch = isLast ? '└─ ' : '├─ ';
-          row.textContent = `${guides}${branch}${toggle} ${icon} ${entry.name}`;
-          container.appendChild(row);
-
-          if (entry.is_dir) {
-            row.onclick = async () => {
-              selectedDir = entry.path;
-              if (expandedDirs.has(entry.path)) {
-                expandedDirs.delete(entry.path);
-              } else {
-                expandedDirs.add(entry.path);
-              }
-              await renderTree();
-            };
-            if (expanded) {
-              const next = document.createElement('div');
-              next.className = 'indent';
-              row.after(next);
-              await renderNodes(next, entry.path, [...ancestry, !isLast]);
-            }
-          } else {
-            row.onclick = () => openFile(entry.path);
-          }
+      for (const entry of tree.entries) {
+        fileMeta.set(entry.path, entry);
+        const row = document.createElement('div');
+        row.className = 'tree-item';
+        if (entry.is_dir) {
+          row.textContent = `📁  ${entry.name}`;
+          row.onclick = () => {
+            currentNavDir = entry.path;
+            renderNav();
+          };
+        } else {
+          row.textContent = `📄  ${entry.name}`;
+          row.onclick = () => openFile(entry.path);
         }
-      };
-
-      await renderNodes(treeEl, '.', []);
+        treeEl.appendChild(row);
+      }
     }
 
     async function bootstrapWorkspace() {
@@ -1507,12 +1630,13 @@
       } catch {}
       if (terminalOnly) {
         document.getElementById('files').remove();
+        toggleFilesBtn.style.display = 'none';
       }
       login.style.display = 'none';
       app.style.display = 'flex';
       setLoginPolling(false);
       const tasks = [loadTerminals()];
-      if (!terminalOnly) tasks.push(renderTree());
+      if (!terminalOnly) tasks.push(renderNav());
       await Promise.all(tasks);
       await refreshUsage();
       await refreshSessionWarning();
@@ -1554,10 +1678,32 @@
       await bootstrapWorkspace();
     });
 
-    newTabBtn.addEventListener('click', () => createTerminal(selectedDir || '.'));
+    newTabBtn.addEventListener('click', () => createTerminal(currentNavDir || '.'));
 
-    openShellHereBtn.addEventListener('click', () => createTerminal(selectedDir || '.'));
-    refreshTreeBtn.addEventListener('click', () => renderTree());
+    toggleFilesBtn.addEventListener('click', () => {
+      const filesEl = document.getElementById('files');
+      if (!filesEl) return;
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        filesEl.classList.toggle('mobile-open');
+      } else {
+        workspaceEl.classList.toggle('files-hidden');
+      }
+      if (fitAddon) fitAddon.fit();
+    });
+
+    mobileBackBtn.addEventListener('click', () => {
+      const filesEl = document.getElementById('files');
+      if (filesEl) filesEl.classList.remove('mobile-open');
+      if (fitAddon) fitAddon.fit();
+    });
+
+    navBackBtn.addEventListener('click', () => {
+      currentNavDir = parentPath(currentNavDir);
+      renderNav();
+    });
+
+    openShellHereBtn.addEventListener('click', () => createTerminal(currentNavDir || '.'));
+    refreshTreeBtn.addEventListener('click', () => renderNav());
 
     editFileBtn.addEventListener('click', () => {
       if (!activeFilePath) return;
@@ -1725,6 +1871,21 @@
       }
       hideSessionWarning();
       await refreshSessionWarning();
+    });
+
+    document.getElementById('key-strip').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-key]');
+      if (!btn || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const seqs = {
+        'ctrl-c': '\x03',
+        'tab':    '\x09',
+        'up':     '\x1b[A',
+        'down':   '\x1b[B',
+        'esc':    '\x1b',
+        'ctrl-d': '\x04'
+      };
+      const seq = seqs[btn.dataset.key];
+      if (seq) ws.send(new TextEncoder().encode(seq));
     });
 
     updateEditorActionState();

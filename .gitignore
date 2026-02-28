@@ -1,4 +1,9 @@
 /target
 /dist
+/.worktrees
 AGENTS.md
 docs/plans/
+codewebway-x86_64-apple-darwin
+codewebway-aarch64-apple-darwin
+codewebway-x86_64-unknown-linux-musl
+codewebway-aarch64-unknown-linux-musl
