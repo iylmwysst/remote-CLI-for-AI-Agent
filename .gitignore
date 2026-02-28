@@ -2,6 +2,7 @@
 /dist
 /.worktrees
 AGENTS.md
+CLAUDE.md
 docs/plans/
 codewebway-x86_64-apple-darwin
 codewebway-aarch64-apple-darwin
