@@ -164,30 +164,33 @@ fn release_owned_zrok_token(port: u16) {
     }
 }
 
-/// Read zrok's stdout to capture the share URL and extract our token.
-/// This is the only reliable way to identify our share — we read directly from
-/// the process we spawned, so there is no confusion with other services.
-/// Returns a Receiver that fires once with the full share URL.
-fn watch_zrok_stdout(port: u16, stdout: std::process::ChildStdout) -> std::sync::mpsc::Receiver<String> {
+/// Scan a stream (stdout or stderr) for the zrok share URL.
+/// Sends the URL once via `tx` when found; keeps reading to drain the pipe.
+fn scan_zrok_stream_for_url<R: std::io::Read + Send + 'static>(
+    port: u16,
+    stream: R,
+    tx: std::sync::mpsc::Sender<String>,
+) {
     use std::io::{BufRead, BufReader};
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
+        let reader = BufReader::new(stream);
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            // Extract token from URL: https://<token>.share.zrok.io
             if let Some(tok) = extract_zrok_token(&line) {
                 write_owned_zrok_token(port, &tok);
                 let _ = tx.send(format!("https://{tok}.share.zrok.io"));
             }
         }
     });
-    rx
 }
 
-/// Write zrok's stderr to a log file so it doesn't clutter the terminal.
-/// Returns the path of the log file so it can be shown at startup.
-fn log_zrok_stderr(port: u16, stderr: std::process::ChildStderr) -> PathBuf {
+/// Write zrok's stderr to a log file and simultaneously scan it for the share URL.
+/// Returns the log file path so it can be shown at startup.
+fn log_zrok_stderr(
+    port: u16,
+    stderr: std::process::ChildStderr,
+    url_tx: std::sync::mpsc::Sender<String>,
+) -> PathBuf {
     use std::io::{BufRead, BufReader, Write};
     let log_path = std::env::temp_dir()
         .join(ZROK_OWNER_DIR)
@@ -201,6 +204,10 @@ fn log_zrok_stderr(port: u16, stderr: std::process::ChildStderr) -> PathBuf {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             let Ok(line) = line else { break };
+            if let Some(tok) = extract_zrok_token(&line) {
+                write_owned_zrok_token(port, &tok);
+                let _ = url_tx.send(format!("https://{tok}.share.zrok.io"));
+            }
             let _ = writeln!(file, "{line}");
         }
     });
@@ -380,18 +387,54 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(state);
     let app = server::router(Arc::clone(&state));
     let addr = format!("{}:{}", cfg.host, cfg.port);
-    let url = format!("http://localhost:{}", cfg.port);
+    let local_url = format!("http://localhost:{}", cfg.port);
 
+    // Start zrok early (before banner) so we can embed the URL directly.
+    let (zrok_child, zrok_url, zrok_log_path) = if cfg.zrok {
+        release_stale_owned_zrok_share(cfg.port);
+        let mut child = spawn_zrok(cfg.port)?;
+        write_owned_zrok_pid(cfg.port, child.id());
+        let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
+        let log_path = if let Some(stderr) = child.stderr.take() {
+            log_zrok_stderr(cfg.port, stderr, url_tx.clone())
+        } else {
+            PathBuf::new()
+        };
+        if let Some(stdout) = child.stdout.take() {
+            scan_zrok_stream_for_url(cfg.port, stdout, url_tx);
+        }
+        // Wait up to 15 s — zrok usually assigns a URL in 3–10 s.
+        let url = url_rx.recv_timeout(Duration::from_secs(15)).ok();
+        (Some(child), url, Some(log_path))
+    } else {
+        (None, None, None)
+    };
+
+    // Print the startup banner (zrok URL above Token if available).
     println!();
     println!("  CodeWebway  ");
     println!("  ─────────────────────────────────");
+    if let Some(ref zu) = zrok_url {
+        println!("  zrok   : {zu}");
+    }
     println!("  Token  : {}", token);
     println!("  PIN    : configured (hidden)");
-    println!("  Open   : {}", url);
+    println!("  Open   : {}", local_url);
     println!("  Bind   : {}", addr);
     println!("  Dir    : {}", working_dir.display());
-    println!("  Login  : use this Token + your PIN on the web login page");
-    println!("  Stop   : press q + Enter, or Ctrl+C twice to confirm shutdown");
+    if cfg.zrok {
+        println!("  WARNING: Public mode — keep Token + PIN secret.");
+        if let Some(ref lp) = zrok_log_path {
+            if !lp.as_os_str().is_empty() {
+                println!("  Log    : {}", lp.display());
+            }
+        }
+        if zrok_url.is_none() {
+            println!("  Note   : zrok URL not yet available — check Log above.");
+        }
+    }
+    println!("  Login  : Token + PIN on the web login page");
+    println!("  Stop   : press q + Enter, or Ctrl+C twice");
     println!("  ─────────────────────────────────");
     println!();
 
@@ -406,7 +449,7 @@ async fn main() -> anyhow::Result<()> {
             None,
         ) {
             Ok(link) => {
-                println!("  TempLink : {}{}", url, link.url);
+                println!("  TempLink : {}{}", local_url, link.url);
                 println!(
                     "  TempInfo : ttl={}m scope={} uses={}",
                     cfg.temp_link_ttl_minutes, cfg.temp_link_scope, cfg.temp_link_max_uses
@@ -423,39 +466,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let zrok_child = if cfg.zrok {
-        release_stale_owned_zrok_share(cfg.port);
-        println!("  zrok   : starting public share on port {}", cfg.port);
-        println!("  WARNING: Public mode exposes this host to the internet.");
-        println!("           Keep Token + PIN secret.");
-        println!("           End exposure with lockout + shutdown.");
-        let mut child = spawn_zrok(cfg.port)?;
-        write_owned_zrok_pid(cfg.port, child.id());
-        let url_rx = child.stdout.take().map(|s| watch_zrok_stdout(cfg.port, s));
-        if let Some(stderr) = child.stderr.take() {
-            let log_path = log_zrok_stderr(cfg.port, stderr);
-            println!("  Log    : {} (tail -f to debug)", log_path.display());
-        }
-        {
-            use std::io::Write;
-            print!("  zrok   : กำลังเชื่อมต่อ โปรดรอ...");
-            let _ = std::io::stdout().flush();
-        }
-        let zrok_url = url_rx.and_then(|rx| rx.recv_timeout(Duration::from_secs(15)).ok());
-        match &zrok_url {
-            Some(url) => {
-                println!("\r\x1b[K  zrok   : {url}");
-                println!("  Access : {url}  Token={} + PIN", token);
-            }
-            None => {
-                println!("\r\x1b[K  zrok   : URL pending");
-                println!("  Access : URL from zrok + Token={} + your PIN", token);
-            }
-        }
-        Some(child)
-    } else {
-        None
-    };
     let zrok_child = Arc::new(Mutex::new(zrok_child));
     if cfg.zrok {
         monitor_zrok_child(Arc::clone(&zrok_child), cfg.port);
@@ -463,8 +473,7 @@ async fn main() -> anyhow::Result<()> {
 
     if cfg.zrok {
         if cfg.public_no_expiry {
-            println!("  Public : no automatic expiry (operator accepts risk)");
-            println!("           stays active until lockout + shutdown.");
+            // no extra output needed; noted in banner
         } else if let Some(minutes) = cfg.public_timeout_minutes {
             println!("  Public : auto-disable after {} minute(s)", minutes);
             let zrok_child_ref = Arc::clone(&zrok_child);
@@ -475,8 +484,7 @@ async fn main() -> anyhow::Result<()> {
                 clear_owned_zrok_pid(cfg.port);
             });
         } else {
-            println!("  Tip    : set --public-timeout-minutes <N> for auto-disable.");
-            println!("           or --public-no-expiry to keep it until lockout + shutdown.");
+            println!("  Tip    : use --public-timeout-minutes <N> or --public-no-expiry");
         }
     } else if cfg.public_timeout_minutes.is_some() || cfg.public_no_expiry {
         println!("  Note   : public share flags are ignored without --zrok.");
