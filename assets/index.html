@@ -1465,7 +1465,7 @@
         if (caps && caps.terminal_only) {
           document.body.classList.add('terminal-only');
         }
-      } catch (_) { /* non-fatal */ }
+      } catch {}
       setLoginPolling(false);
       await Promise.all([loadTerminals(), renderTree()]);
       await refreshUsage();
