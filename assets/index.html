@@ -221,7 +221,7 @@
       min-width: 24px;
       text-align: center;
     }
-    .tab .icon-btn:disabled { cursor: not-allowed; opacity: 0.3; }
+    .tab .icon-btn:disabled { cursor: default; opacity: 0.3; }
     #new-tab {
       background: transparent;
       border: 1px solid #3a3a3a;
@@ -1170,6 +1170,7 @@
         const title = document.createElement('span');
         title.className = 'title';
         title.textContent = item.title;
+        title.ondblclick = (e) => { e.stopPropagation(); promptRenameTerminal(item); };
 
         const leftBtn = document.createElement('button');
         leftBtn.className = 'icon-btn';
