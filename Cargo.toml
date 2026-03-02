@@ -1,6 +1,6 @@
 [package]
 name = "codewebway"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 
 [[bin]]
@@ -23,9 +23,14 @@ rand = "0.8"
 rpassword = "7"
 sha2 = "0.10"
 tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
+reqwest = { version = "0.12", features = ["json"] }
+dirs = "5"
+toml = "0.8"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
+tempfile = "3"
+mockito = "1"
 
 [profile.release]
 opt-level = 3
