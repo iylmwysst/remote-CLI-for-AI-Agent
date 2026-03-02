@@ -56,6 +56,55 @@ codewebway -z --temp-link --temp-link-scope interactive
 codewebway -z --temp-link --temp-link-scope read-only --temp-link-ttl-minutes 15
 ```
 
+## Fleet Mode
+
+Control CodeWebway remotely from a browser — no SSH required.
+
+### Setup (first time)
+
+1. Create a machine on the [WebwayFleet dashboard](https://webwayfleet.dev)
+2. Run on your Pi / Jetson / headless device:
+
+```bash
+# Register device with WebwayFleet
+codewebway enable <token-from-dashboard>
+
+# Start the fleet daemon (waits for start/stop commands from the dashboard)
+codewebway fleet --zrok --public-no-expiry --pin 123456
+```
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `codewebway enable <token>` | Register this device with WebwayFleet |
+| `codewebway enable <token> --endpoint <url>` | Register with a self-hosted fleet server |
+| `codewebway fleet [flags]` | Run as fleet daemon (polls for start/stop commands) |
+| `codewebway disable` | Remove fleet credentials from this device |
+
+### Systemd service (recommended)
+
+```ini
+[Unit]
+Description=CodeWebway Fleet Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/codewebway fleet --zrok --public-no-expiry --pin 123456
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now codewebway-fleet
+```
+
+---
+
 ## Public Access
 
 ### zrok (recommended)

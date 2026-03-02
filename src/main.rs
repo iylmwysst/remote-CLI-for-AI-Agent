@@ -1,5 +1,6 @@
 mod assets;
 mod config;
+mod fleet;
 mod server;
 mod session;
 
@@ -396,17 +397,33 @@ fn monitor_zrok_child(zrok_child: Arc<Mutex<Option<Child>>>, port: u16) {
     });
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+// ─── Public API for fleet mode ──────────────────────────────────────────────
 
-    let cfg = Config::parse_from(normalized_args());
+pub struct ServerHandle {
+    pub token: String,
+    pub pin: String,
+    pub zrok_url: Option<String>,
+    pub zrok_log_path: Option<PathBuf>,
+    pub working_dir: PathBuf,
+    pub shutdown_tx: mpsc::UnboundedSender<()>,
+    pub server_done: tokio::sync::oneshot::Receiver<()>,
+    pub state: Arc<AppState>,
+}
 
+pub async fn start_server(cfg: Config) -> anyhow::Result<ServerHandle> {
     let token = cfg.password.clone().unwrap_or_else(|| generate_token(16));
     validate_token(&token)?;
-    let pin = resolve_pin(cfg.pin.clone())?;
-    let working_dir = resolve_working_dir(cfg.cwd.clone())?;
 
+    let pin = if cfg.pin.is_some() || io::stdin().is_terminal() {
+        resolve_pin(cfg.pin.clone())?
+    } else {
+        // Non-interactive (daemon mode): auto-generate 6-digit PIN
+        (0..6)
+            .map(|_| char::from(rand::thread_rng().gen_range(b'0'..=b'9')))
+            .collect()
+    };
+
+    let working_dir = resolve_working_dir(cfg.cwd.clone())?;
     let idle_timeout = Duration::from_secs(30 * 60);
     let absolute_timeout = Duration::from_secs(12 * 60 * 60);
     let shutdown_grace = Duration::from_secs(3 * 60 * 60);
@@ -417,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         password: token.clone(),
-        pin: Some(pin),
+        pin: Some(pin.clone()),
         failed_logins: Mutex::new(FailedLoginTracker::new(3, Duration::from_secs(300))),
         sessions: Mutex::new(server::SessionStore::new(idle_timeout, absolute_timeout)),
         access_locked: Mutex::new(false),
@@ -450,9 +467,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(state);
     let app = server::router(Arc::clone(&state));
     let addr = format!("{}:{}", cfg.host, cfg.port);
-    let local_url = format!("http://localhost:{}", cfg.port);
 
-    // Start zrok early (before banner) so we can embed the URL directly.
     let (zrok_child, zrok_url, zrok_log_path) = if cfg.zrok {
         check_zrok_ready()?;
         release_stale_owned_zrok_share(cfg.port);
@@ -474,31 +489,134 @@ async fn main() -> anyhow::Result<()> {
         (None, None, None)
     };
 
+    let zrok_child = Arc::new(Mutex::new(zrok_child));
+    if cfg.zrok {
+        monitor_zrok_child(Arc::clone(&zrok_child), cfg.port);
+    }
+
+    if cfg.zrok {
+        if let Some(minutes) = cfg.public_timeout_minutes {
+            let zrok_child_ref = Arc::clone(&zrok_child);
+            let port = cfg.port;
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(minutes.saturating_mul(60)));
+                let mut child = zrok_child_ref.lock().unwrap();
+                let _ = stop_zrok_child(&mut child, port, "public share auto-disabled");
+                clear_owned_zrok_pid(port);
+            });
+        }
+    }
+
+    if !auto_shutdown_disabled {
+        let tx = shutdown_tx.clone();
+        let state_ref = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                if server::shutdown_remaining_secs(&state_ref, std::time::Instant::now()) == 0 {
+                    eprintln!("Auto-shutdown: no authenticated activity in grace window.");
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        });
+    }
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let (server_done_tx, server_done_rx) = tokio::sync::oneshot::channel::<()>();
+    let port = cfg.port;
+    let zrok_child_inner = Arc::clone(&zrok_child);
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.recv().await;
+            })
+            .await
+            .ok();
+        let mut child = zrok_child_inner.lock().unwrap();
+        let _ = stop_zrok_child(&mut child, port, "stopped");
+        clear_owned_zrok_pid(port);
+        let _ = server_done_tx.send(());
+    });
+
+    Ok(ServerHandle {
+        token,
+        pin,
+        zrok_url,
+        zrok_log_path,
+        working_dir,
+        shutdown_tx,
+        server_done: server_done_rx,
+        state,
+    })
+}
+
+// ─── Entry point ─────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
+    // Route fleet subcommands before clap parsing.
+    let raw_args: Vec<String> = std::env::args().collect();
+    match raw_args.get(1).map(String::as_str) {
+        Some("enable") => {
+            let token = raw_args
+                .get(2)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Usage: codewebway enable <token> [--endpoint <url>]")
+                })?
+                .clone();
+            let endpoint = raw_args
+                .windows(2)
+                .find(|w| w[0] == "--endpoint")
+                .map(|w| w[1].clone())
+                .unwrap_or_else(|| "https://webwayfleet.dev".to_string());
+            return fleet::enable(&endpoint, &token).await;
+        }
+        Some("disable") => return Ok(fleet::disable()?),
+        Some("fleet") => {
+            let mut fleet_args = raw_args.clone();
+            fleet_args.remove(1); // strip "fleet" so Config::parse_from works normally
+            let cfg = Config::parse_from(fleet_args);
+            return fleet::run_daemon(cfg).await;
+        }
+        _ => {}
+    }
+
+    let cfg = Config::parse_from(normalized_args());
+    let handle = start_server(cfg.clone()).await?;
+
+    let local_url = format!("http://localhost:{}", cfg.port);
+    let addr = format!("{}:{}", cfg.host, cfg.port);
+
     // Print the startup banner.
     println!();
     println!("  CodeWebway  ");
     println!("  ─────────────────────────────────");
-    if let Some(ref zu) = zrok_url {
+    if let Some(ref zu) = handle.zrok_url {
         println!("  zrok   : {zu}");
     } else if cfg.zrok {
         println!("  zrok   : (URL pending — see Log below)");
     }
-    println!("  Token  : {}", token);
+    println!("  Token  : {}", handle.token);
     println!("  PIN    : configured (hidden)");
     println!("  Open   : {}", local_url);
     println!("  Bind   : {}", addr);
-    println!("  Dir    : {}", working_dir.display());
+    println!("  Dir    : {}", handle.working_dir.display());
     println!("  Login  : Token + PIN on the web login page");
     println!("  Stop   : press q + Enter, or Ctrl+C twice");
     println!("  ─────────────────────────────────");
     println!();
+
     if cfg.zrok {
         println!("  WARNING: This host is now publicly accessible via zrok.");
         println!("           Anyone with the URL can attempt to log in.");
         println!("           Keep Token + PIN secret — do not share them.");
         println!("           To end exposure: lock out all sessions, then shutdown.");
         println!();
-        if let Some(ref lp) = zrok_log_path {
+        if let Some(ref lp) = handle.zrok_log_path {
             if !lp.as_os_str().is_empty() {
                 println!("  Log    : {} (tail -f to debug)", lp.display());
                 println!();
@@ -510,14 +628,14 @@ async fn main() -> anyhow::Result<()> {
         let scope =
             TempLinkScope::from_input(&cfg.temp_link_scope).unwrap_or(TempLinkScope::ReadOnly);
         match server::create_temp_link_for_host(
-            &state,
+            &handle.state,
             cfg.temp_link_ttl_minutes,
             scope,
             cfg.temp_link_max_uses,
             None,
         ) {
             Ok(link) => {
-                let base = zrok_url.as_deref().unwrap_or(&local_url);
+                let base = handle.zrok_url.as_deref().unwrap_or(&local_url);
                 println!("  TempLink : {}{}", base, link.url);
                 println!(
                     "  TempInfo : ttl={}m scope={} uses={}",
@@ -535,23 +653,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let zrok_child = Arc::new(Mutex::new(zrok_child));
-    if cfg.zrok {
-        monitor_zrok_child(Arc::clone(&zrok_child), cfg.port);
-    }
-
     if cfg.zrok {
         if cfg.public_no_expiry {
             // no extra output needed; noted in banner
         } else if let Some(minutes) = cfg.public_timeout_minutes {
             println!("  Public : auto-disable after {} minute(s)", minutes);
-            let zrok_child_ref = Arc::clone(&zrok_child);
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(minutes.saturating_mul(60)));
-                let mut child = zrok_child_ref.lock().unwrap();
-                let _ = stop_zrok_child(&mut child, cfg.port, "public share auto-disabled");
-                clear_owned_zrok_pid(cfg.port);
-            });
         } else {
             println!("  Tip    : use --public-timeout-minutes <N> or --public-no-expiry");
         }
@@ -560,7 +666,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if io::stdin().is_terminal() {
-        let tx = shutdown_tx.clone();
+        let tx = handle.shutdown_tx.clone();
         std::thread::spawn(move || {
             let stdin = io::stdin();
             let mut line = String::new();
@@ -592,7 +698,7 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(unix)]
     {
-        let tx = shutdown_tx.clone();
+        let tx = handle.shutdown_tx.clone();
         tokio::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigterm = match signal(SignalKind::terminate()) {
@@ -617,7 +723,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     {
-        let tx = shutdown_tx.clone();
+        let tx = handle.shutdown_tx.clone();
         tokio::spawn(async move {
             let mut press_count = 0usize;
             loop {
@@ -637,31 +743,6 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    if !auto_shutdown_disabled {
-        let tx = shutdown_tx.clone();
-        let state_ref = Arc::clone(&state);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                tick.tick().await;
-                if server::shutdown_remaining_secs(&state_ref, std::time::Instant::now()) == 0 {
-                    eprintln!("Auto-shutdown: no authenticated activity in grace window.");
-                    let _ = tx.send(());
-                    break;
-                }
-            }
-        });
-    }
-
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.recv().await;
-        })
-        .await?;
-
-    let mut child = zrok_child.lock().unwrap();
-    let _ = stop_zrok_child(&mut child, cfg.port, "stopped");
-    clear_owned_zrok_pid(cfg.port);
+    let _ = handle.server_done.await;
     Ok(())
 }
