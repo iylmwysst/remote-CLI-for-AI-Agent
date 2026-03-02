@@ -572,7 +572,7 @@ async fn main() -> anyhow::Result<()> {
                 .windows(2)
                 .find(|w| w[0] == "--endpoint")
                 .map(|w| w[1].clone())
-                .unwrap_or_else(|| "https://webwayfleet.dev".to_string());
+                .unwrap_or_else(|| "https://api.webwayfleet.dev".to_string());
             return fleet::enable(&endpoint, &token).await;
         }
         Some("disable") => return Ok(fleet::disable()?),
