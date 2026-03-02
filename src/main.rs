@@ -579,7 +579,16 @@ async fn main() -> anyhow::Result<()> {
         Some("fleet") => {
             let mut fleet_args = raw_args.clone();
             fleet_args.remove(1); // strip "fleet" so Config::parse_from works normally
-            let cfg = Config::parse_from(fleet_args);
+            let mut cfg = Config::parse_from(fleet_args);
+            // Fleet mode always uses zrok with no expiry — no flags needed.
+            cfg.zrok = true;
+            cfg.public_no_expiry = true;
+            // Use stored PIN from fleet.toml unless overridden on the CLI.
+            if cfg.pin.is_none() {
+                if let Ok(creds) = fleet::load_credentials() {
+                    cfg.pin = creds.pin;
+                }
+            }
             return fleet::run_daemon(cfg).await;
         }
         _ => {}

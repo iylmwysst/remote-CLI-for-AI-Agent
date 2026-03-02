@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,8 @@ pub struct FleetCredentials {
     pub machine_token: String,
     pub machine_name: String,
     pub fleet_endpoint: String,
+    /// PIN stored during `enable`; used by the daemon so no flag is needed at runtime.
+    pub pin: Option<String>,
 }
 
 pub fn credentials_path() -> PathBuf {
@@ -70,14 +73,19 @@ pub async fn enable_to_path(fleet_endpoint: &str, enable_token: &str, path: &Pat
         .to_string();
 
     let machine_name = hostname();
+    let pin: String = (0..6)
+        .map(|_| char::from(rand::thread_rng().gen_range(b'0'..=b'9')))
+        .collect();
     let creds = FleetCredentials {
         machine_token,
         machine_name: machine_name.clone(),
         fleet_endpoint: fleet_endpoint.to_string(),
+        pin: Some(pin.clone()),
     };
     save_credentials_to(&creds, path)?;
 
     println!("  ✓ Device enabled: \"{machine_name}\"");
+    println!("  Terminal PIN    : {pin}  (save this — needed to log in)");
     println!("  Credentials saved to {}", path.display());
     Ok(())
 }
@@ -342,6 +350,7 @@ mod tests {
             machine_token: "mt_test".to_string(),
             machine_name: "pi-test".to_string(),
             fleet_endpoint: endpoint.to_string(),
+            pin: Some("123456".to_string()),
         }
     }
 
@@ -421,6 +430,10 @@ mod tests {
 
         let creds = load_credentials_from(&path).unwrap();
         assert_eq!(creds.machine_token, "mt_xyz");
+        // PIN should be auto-generated (6 digits)
+        let pin = creds.pin.unwrap();
+        assert_eq!(pin.len(), 6);
+        assert!(pin.chars().all(|c| c.is_ascii_digit()));
         m.assert_async().await;
     }
 
