@@ -565,7 +565,7 @@ async fn main() -> anyhow::Result<()> {
             let token = raw_args
                 .get(2)
                 .ok_or_else(|| {
-                    anyhow::anyhow!("Usage: codewebway enable <token> [--endpoint <url>]")
+                    anyhow::anyhow!("Usage: codewebway enable <token> [--pin <pin>] [--endpoint <url>]")
                 })?
                 .clone();
             let endpoint = raw_args
@@ -573,7 +573,20 @@ async fn main() -> anyhow::Result<()> {
                 .find(|w| w[0] == "--endpoint")
                 .map(|w| w[1].clone())
                 .unwrap_or_else(|| "https://webwayfleet-api.webwayfleet.workers.dev".to_string());
-            return fleet::enable(&endpoint, &token).await;
+            // PIN: from --pin flag, or prompt if interactive, or auto-generate
+            let pin = raw_args
+                .windows(2)
+                .find(|w| w[0] == "--pin")
+                .map(|w| w[1].clone())
+                .or_else(|| {
+                    if io::stdin().is_terminal() {
+                        eprint!("  Set terminal PIN (6 digits): ");
+                        rpassword::read_password().ok().filter(|p| !p.is_empty())
+                    } else {
+                        None
+                    }
+                });
+            return fleet::enable(&endpoint, &token, pin).await;
         }
         Some("disable") => return Ok(fleet::disable()?),
         Some("fleet") => {

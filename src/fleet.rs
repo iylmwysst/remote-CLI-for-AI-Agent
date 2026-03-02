@@ -46,11 +46,11 @@ pub fn save_credentials_to(creds: &FleetCredentials, path: &Path) -> Result<()> 
 
 // ─── enable / disable ─────────────────────────────────────────────────────────
 
-pub async fn enable(fleet_endpoint: &str, enable_token: &str) -> Result<()> {
-    enable_to_path(fleet_endpoint, enable_token, &credentials_path()).await
+pub async fn enable(fleet_endpoint: &str, enable_token: &str, pin: Option<String>) -> Result<()> {
+    enable_to_path(fleet_endpoint, enable_token, pin, &credentials_path()).await
 }
 
-pub async fn enable_to_path(fleet_endpoint: &str, enable_token: &str, path: &Path) -> Result<()> {
+pub async fn enable_to_path(fleet_endpoint: &str, enable_token: &str, pin: Option<String>, path: &Path) -> Result<()> {
     let client = reqwest::Client::new();
     let resp: serde_json::Value = client
         .post(format!("{fleet_endpoint}/api/v1/agent/enable"))
@@ -73,9 +73,15 @@ pub async fn enable_to_path(fleet_endpoint: &str, enable_token: &str, path: &Pat
         .to_string();
 
     let machine_name = hostname();
-    let pin: String = (0..6)
-        .map(|_| char::from(rand::thread_rng().gen_range(b'0'..=b'9')))
-        .collect();
+    let pin = match pin {
+        Some(p) => p,
+        None => {
+            // Auto-generate in non-interactive mode (scripted/daemon)
+            (0..6)
+                .map(|_| char::from(rand::thread_rng().gen_range(b'0'..=b'9')))
+                .collect()
+        }
+    };
     let creds = FleetCredentials {
         machine_token,
         machine_name: machine_name.clone(),
@@ -85,7 +91,7 @@ pub async fn enable_to_path(fleet_endpoint: &str, enable_token: &str, path: &Pat
     save_credentials_to(&creds, path)?;
 
     println!("  ✓ Device enabled: \"{machine_name}\"");
-    println!("  Terminal PIN    : {pin}  (save this — needed to log in)");
+    println!("  Terminal PIN    : {pin}");
     println!("  Credentials saved to {}", path.display());
     Ok(())
 }
@@ -424,7 +430,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let path = tmp_path(&dir);
-        enable_to_path(&server.url(), "enable_tok_123", &path)
+        enable_to_path(&server.url(), "enable_tok_123", None, &path)
             .await
             .unwrap();
 
