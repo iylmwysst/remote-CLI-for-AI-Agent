@@ -213,6 +213,11 @@ pub async fn run_daemon(cfg: crate::config::Config) -> anyhow::Result<()> {
                 h
             }
             Err(e) => {
+                if is_unauthorized(&e) {
+                    eprintln!("  Fleet: device deregistered (401) — daemon stopping.");
+                    eprintln!("  Run: codewebway disable");
+                    std::process::exit(1);
+                }
                 eprintln!("  Fleet: heartbeat error (will retry): {e}");
                 continue;
             }
@@ -297,12 +302,26 @@ async fn wait_for_stop(
                     }
                 }
             }
-            Err(e) => eprintln!("  Fleet: heartbeat error during run: {e}"),
+            Err(e) => {
+                if is_unauthorized(&e) {
+                    eprintln!("  Fleet: device deregistered (401) — daemon stopping.");
+                    eprintln!("  Run: codewebway disable");
+                    std::process::exit(1);
+                }
+                eprintln!("  Fleet: heartbeat error during run: {e}");
+            }
         }
     }
 }
 
 // ─── Utility ───────────────────────────────────────────────────────────────────
+
+fn is_unauthorized(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<reqwest::Error>()
+        .and_then(|re| re.status())
+        .map(|s| s == reqwest::StatusCode::UNAUTHORIZED)
+        .unwrap_or(false)
+}
 
 fn hostname() -> String {
     std::process::Command::new("hostname")
@@ -440,6 +459,23 @@ mod tests {
         let cmd = hb.command.unwrap();
         assert_eq!(cmd.kind, "run_codewebway");
         assert_eq!(cmd.execution_id.as_deref(), Some("ex1"));
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_401_returns_error() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/api/v1/agent/heartbeat")
+            .with_status(401)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":{"code":"UNAUTHORIZED","message":"Invalid token"}}"#)
+            .create_async()
+            .await;
+
+        let creds = make_creds(&server.url());
+        let result = send_heartbeat(&creds, "idle", None, false).await;
+        assert!(result.is_err());
+        assert!(is_unauthorized(&result.unwrap_err()));
     }
 
     #[tokio::test]
